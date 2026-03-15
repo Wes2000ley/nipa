@@ -21,6 +21,12 @@ readonly DEFAULT_MODE="committed"
 readonly DEFAULT_RESERVED_MEM_GB=8
 readonly DEFAULT_VM_MEM_GB=2
 readonly DEFAULT_THREAD_SPAWN_DELAY=0.5
+readonly DEFAULT_TARGET_CPU_UTIL_PCT=90
+readonly DEFAULT_SCHEDULER_HISTORY_SEC=5
+readonly DEFAULT_SCHEDULER_SAMPLE_PERIOD_SEC=1
+readonly DEFAULT_SCHEDULER_UP_HYSTERESIS_PCT=4
+readonly DEFAULT_SCHEDULER_DOWN_HYSTERESIS_PCT=2
+readonly DEFAULT_VM_IDLE_SHUTDOWN_SEC=15
 readonly DEFAULT_BUILD_CLEAN="config-change"
 readonly DEFAULT_DIRTY_COMMIT_MSG="local-vmksft dirty snapshot"
 readonly DEFAULT_PATCH_COMMIT_PREFIX="local-vmksft patch snapshot"
@@ -58,6 +64,9 @@ FRESH_CACHE=0
 HOST_CPUS=0
 HOST_MEM_KB=0
 HOST_MEM_MIB=0
+GUEST_MEM_MIB=0
+SCHEDULER_MIN_AVAILABLE_MEM_MIB=0
+SCHEDULER_MAX_DIRTY_MIB=0
 VIRTIOFSD_PATH=""
 BRANCH_NAME=""
 BRANCH_DATE=""
@@ -95,7 +104,8 @@ Options:
   --build-clean MODE    Build cleaning policy: always, never, or config-change.
                         Default: ${DEFAULT_BUILD_CLEAN}
   --explain, -explain   Print the fully resolved execution plan and exit
-  --threads N|auto      vmksft-p worker thread count. Default: ${DEFAULT_THREADS}
+  --threads N|auto      Maximum vmksft-p worker threads. The dynamic scheduler
+                        only admits work up to this cap. Default: ${DEFAULT_THREADS}
   --cpus N|auto         Guest CPU count. Default: ${DEFAULT_CPUS}
   --memory SIZE|auto    Guest memory. Default: ${DEFAULT_MEMORY}
   --init-prompt STR     Initial guest prompt. Default: ${DEFAULT_INIT_PROMPT}
@@ -206,6 +216,7 @@ resolve_guest_memory() {
 
 	memory_to_mib "${GUEST_MEMORY}" >/dev/null ||
 		die "--memory must be auto or a size with K, M, G, or T suffix: ${GUEST_MEMORY}"
+	GUEST_MEM_MIB="$(memory_to_mib "${GUEST_MEMORY}")"
 }
 
 resolve_guest_cpus() {
@@ -219,11 +230,8 @@ resolve_guest_cpus() {
 }
 
 resolve_threads() {
-	local target_cpus
-	local eighty_pct_cpus
 	local guest_mem_mib
 	local reserved_mem_mib
-	local cpu_limited
 	local mem_limited
 
 	if [[ "${THREADS}" != "auto" ]]; then
@@ -232,13 +240,7 @@ resolve_threads() {
 		return 0
 	fi
 
-	guest_mem_mib="$(memory_to_mib "${GUEST_MEMORY}")"
-
-	eighty_pct_cpus=$(( (HOST_CPUS * 80) / 100 ))
-	if (( eighty_pct_cpus < 1 )); then
-		eighty_pct_cpus=1
-	fi
-	target_cpus="${eighty_pct_cpus}"
+	guest_mem_mib="${GUEST_MEM_MIB}"
 
 	reserved_mem_mib=$(( DEFAULT_RESERVED_MEM_GB * 1024 ))
 	mem_limited=$(( (HOST_MEM_MIB - reserved_mem_mib) / guest_mem_mib ))
@@ -246,15 +248,33 @@ resolve_threads() {
 		mem_limited=1
 	fi
 
-	cpu_limited=$(( target_cpus / GUEST_CPUS ))
-	if (( cpu_limited < 1 )); then
-		cpu_limited=1
-	fi
+	THREADS="${mem_limited}"
+}
 
-	if (( cpu_limited < mem_limited )); then
-		THREADS="${cpu_limited}"
+resolve_scheduler_limits() {
+	local reserved_mem_mib
+
+	reserved_mem_mib=$(( DEFAULT_RESERVED_MEM_GB * 1024 ))
+	if (( GUEST_MEM_MIB < reserved_mem_mib )); then
+		SCHEDULER_MIN_AVAILABLE_MEM_MIB="${GUEST_MEM_MIB}"
 	else
-		THREADS="${mem_limited}"
+		SCHEDULER_MIN_AVAILABLE_MEM_MIB="${reserved_mem_mib}"
+	fi
+	if (( SCHEDULER_MIN_AVAILABLE_MEM_MIB < 1024 )); then
+		SCHEDULER_MIN_AVAILABLE_MEM_MIB=1024
+	fi
+	if (( SCHEDULER_MIN_AVAILABLE_MEM_MIB > HOST_MEM_MIB / 2 )); then
+		SCHEDULER_MIN_AVAILABLE_MEM_MIB=$(( HOST_MEM_MIB / 2 ))
+	fi
+	if (( SCHEDULER_MIN_AVAILABLE_MEM_MIB < 256 )); then
+		SCHEDULER_MIN_AVAILABLE_MEM_MIB=256
+	fi
+	SCHEDULER_MAX_DIRTY_MIB=$(( GUEST_MEM_MIB / 2 ))
+	if (( SCHEDULER_MAX_DIRTY_MIB < 256 )); then
+		SCHEDULER_MAX_DIRTY_MIB=256
+	fi
+	if (( SCHEDULER_MAX_DIRTY_MIB > 1024 )); then
+		SCHEDULER_MAX_DIRTY_MIB=1024
 	fi
 }
 
@@ -573,7 +593,10 @@ VM / executor settings:
   target: ${EXECUTOR_TARGET}
   guest cpus: ${GUEST_CPUS}
   guest memory: ${GUEST_MEMORY}
-  worker threads: ${THREADS}
+  worker cap: ${THREADS}
+  dynamic cpu target: ${DEFAULT_TARGET_CPU_UTIL_PCT}%
+  scheduler window: ${DEFAULT_SCHEDULER_HISTORY_SEC}s sampled every ${DEFAULT_SCHEDULER_SAMPLE_PERIOD_SEC}s
+  idle VM shutdown: ${DEFAULT_VM_IDLE_SHUTDOWN_SEC}s
   build clean policy: ${BUILD_CLEAN}
   init prompt: ${INIT_PROMPT}
   virtiofsd: ${VIRTIOFSD_PATH:-not found}
@@ -944,6 +967,7 @@ HOST_MEM_MIB="$(( HOST_MEM_KB / 1024 ))"
 resolve_guest_memory
 resolve_guest_cpus
 resolve_threads
+resolve_scheduler_limits
 [[ "${THREADS}" =~ ^[0-9]+$ ]] || die "--threads must resolve to a non-negative integer: ${THREADS}"
 SOURCE_BRANCH="$(current_source_branch)"
 
@@ -1004,7 +1028,7 @@ if [[ "${MODE}" == "patches" ]]; then
 	log "using patch directory: ${PATCH_DIR}"
 fi
 log "using build clean policy: ${BUILD_CLEAN}"
-log "using worker settings: threads=${THREADS} guest_cpus=${GUEST_CPUS} guest_memory=${GUEST_MEMORY}"
+log "using worker settings: worker_cap=${THREADS} guest_cpus=${GUEST_CPUS} guest_memory=${GUEST_MEMORY} target_cpu=${DEFAULT_TARGET_CPU_UTIL_PCT}%"
 log "reusing cached worker tree: ${WORKER_TREE}"
 log "all writable harness state stays under ${STATE_DIR}"
 log "kernel builds will be skipped when tree and config inputs are unchanged"
@@ -1091,6 +1115,15 @@ nested_tests = on
 [cfg]
 thread_cnt = ${THREADS}
 thread_spawn_delay = ${DEFAULT_THREAD_SPAWN_DELAY}
+scheduler_target_cpu_pct = ${DEFAULT_TARGET_CPU_UTIL_PCT}
+scheduler_sample_period_sec = ${DEFAULT_SCHEDULER_SAMPLE_PERIOD_SEC}
+scheduler_history_sec = ${DEFAULT_SCHEDULER_HISTORY_SEC}
+scheduler_up_hysteresis_pct = ${DEFAULT_SCHEDULER_UP_HYSTERESIS_PCT}
+scheduler_down_hysteresis_pct = ${DEFAULT_SCHEDULER_DOWN_HYSTERESIS_PCT}
+scheduler_min_available_mem_mib = ${SCHEDULER_MIN_AVAILABLE_MEM_MIB}
+scheduler_max_dirty_mib = ${SCHEDULER_MAX_DIRTY_MIB}
+scheduler_vm_idle_shutdown_sec = ${DEFAULT_VM_IDLE_SHUTDOWN_SEC}
+scheduler_min_workers = 0
 EOF
 
 log "running local_vmksft_p.py for TARGETS=${EXECUTOR_TARGET}"

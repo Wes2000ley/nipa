@@ -24,8 +24,8 @@ from core import NipaLifetime
 from lib import CbArg
 from lib import Fetcher, namify
 from lib import guess_indicators, parse_nested_tests, result_from_indicators
-from lib import wait_loadavg
 
+from host_scheduler import DynamicWorkerScheduler, size_to_mib
 from local_vm import LocalVM, new_local_vm
 
 
@@ -65,18 +65,66 @@ def _live_status_touch(path, state):
     _live_status_write(path, state)
 
 
+def _scheduler_status_touch(path, lock, state, snapshot):
+    if not path or not lock or not state:
+        return
+
+    with lock:
+        next_snapshot = dict(snapshot)
+        guest_mem_mib = state.get('scheduler', {}).get('guest_mem_mib')
+        if guest_mem_mib is not None:
+            next_snapshot['guest_mem_mib'] = guest_mem_mib
+        state['scheduler'] = next_snapshot
+        _live_status_touch(path, state)
+
+
+def _stop_vm(vm, results_path, thr_id, vm_id, reason, capture_gcov=False):
+    if vm is None:
+        return None
+
+    if capture_gcov:
+        vm.capture_gcov(results_path + f'/kernel-thr{thr_id}-{vm_id}.lcov')
+    vm.stop()
+    vm.dump_log(results_path + f'/{reason}-thr{thr_id}-{vm_id}')
+    return None
+
+
 def _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
-               live_status_path=None, live_lock=None, live_state=None):
+               live_status_path=None, live_lock=None, live_state=None,
+               scheduler=None):
     test_path = config.get('ksft', 'test_path', fallback='tools/testing/selftests')
     vm = None
     vm_id = -1
+    idle_since = time.monotonic()
+
+    def work_remaining():
+        return in_queue.unfinished_tasks > 0
 
     while True:
+        if scheduler is not None:
+            action = scheduler.wait_for_slot(thr_id, work_remaining,
+                                             has_vm=vm is not None,
+                                             idle_since=idle_since)
+            if action == "exit":
+                print(f"INFO: thr-{thr_id} has no more work, exiting")
+                break
+            if action == "stop-vm":
+                print(f"INFO: thr-{thr_id} idling under pressure, recycling VM")
+                vm = _stop_vm(vm, results_path, thr_id, vm_id, "vm-idle-stop",
+                              capture_gcov=True)
+                idle_since = time.monotonic()
+                continue
+
         try:
             work_item = in_queue.get(block=False)
         except queue.Empty:
-            print(f"INFO: thr-{thr_id} has no more work, exiting")
-            break
+            if scheduler is not None:
+                scheduler.release_slot(thr_id)
+            if not work_remaining():
+                print(f"INFO: thr-{thr_id} has no more work, exiting")
+                break
+            time.sleep(0.2)
+            continue
 
         test_id = work_item['tid']
         prog = work_item['prog']
@@ -84,148 +132,154 @@ def _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
         test_name = namify(prog)
         file_name = f"{test_id}-{test_name}"
         is_retry = 'result' in work_item
+        idle_since = None
 
-        if live_status_path and live_lock and live_state:
-            with live_lock:
-                entry = live_state['tests'][test_id - 1]
-                entry['worker'] = thr_id
-                entry['attempts'] += 1
-                entry['started'] = str(datetime.datetime.now(datetime.UTC))
-                entry['status'] = 'retry-running' if is_retry else 'running'
-                _live_status_touch(live_status_path, live_state)
-
-        deadline = (hard_stop - datetime.datetime.now(datetime.UTC)).total_seconds()
-
-        if is_retry:
-            file_name += '-retry'
-        # Don't run retries if we can't finish with 10min to spare
-        if is_retry and deadline - work_item['time'] < 10 * 60:
-            print(f"INFO: thr-{thr_id} retry skipped == " + prog)
-            out_queue.put(work_item)
-            continue
-
-        if vm is None:
-            vm_id, vm = new_local_vm(results_path, vm_id, config=config, thr=thr_id)
-
-        print(f"INFO: thr-{thr_id} testing == " + prog)
-        t1 = datetime.datetime.now()
-        vm.cmd(f'make -C {test_path} TARGETS="{target}" TEST_PROGS={prog} TEST_GEN_PROGS="" run_tests')
         try:
-            vm.drain_to_prompt(deadline=deadline)
-            retcode = vm.bash_prev_retcode()
-        except TimeoutError:
-            print(f"INFO: thr-{thr_id} test timed out:", prog)
-            vm.kill_current_cmd()
-            retcode = 1
+            if live_status_path and live_lock and live_state:
+                with live_lock:
+                    entry = live_state['tests'][test_id - 1]
+                    entry['worker'] = thr_id
+                    entry['attempts'] += 1
+                    entry['started'] = str(datetime.datetime.now(datetime.UTC))
+                    entry['status'] = 'retry-running' if is_retry else 'running'
+                    _live_status_touch(live_status_path, live_state)
 
-        t2 = datetime.datetime.now()
+            deadline = (hard_stop - datetime.datetime.now(datetime.UTC)).total_seconds()
 
-        indicators = guess_indicators(vm.log_out)
-        result = result_from_indicators(retcode, indicators)
-
-        vm.check_health()
-
-        crashes = None
-        if vm.fail_state == 'oops':
-            print(f"INFO: thr-{thr_id} test crashed kernel:", prog)
-            crashes = vm.extract_crash(results_path + f'/vm-crash-thr{thr_id}-{vm_id}')
-            # Extraction will clear/discard false-positives (ignored traces)
-            # check VM is still in failed state
-            if vm.fail_state:
-                result = "fail"
-
-        print(f"INFO: thr-{thr_id} {prog} >> retcode:", retcode, "result:", result, "found", indicators)
-
-        if is_retry:
-            outcome = work_item
-            outcome['retry'] = result
-        else:
-            outcome = {'tid': test_id, 'prog': prog, 'target': target,
-                       'test': test_name, 'file_name': file_name,
-                       'result': result, 'time': (t2 - t1).total_seconds()}
-            if crashes:
-                outcome['crashes'] = crashes
-
-        if config.getboolean('ksft', 'nested_tests', fallback=False):
             if is_retry:
-                prev_results = outcome['results'] if 'results' in outcome else []
+                file_name += '-retry'
+            # Don't run retries if we can't finish with 10min to spare
+            if is_retry and deadline - work_item['time'] < 10 * 60:
+                print(f"INFO: thr-{thr_id} retry skipped == " + prog)
+                out_queue.put(work_item)
+                continue
+
+            if vm is None:
+                vm_id, vm = new_local_vm(results_path, vm_id, config=config, thr=thr_id)
+
+            print(f"INFO: thr-{thr_id} testing == " + prog)
+            t1 = datetime.datetime.now()
+            vm.cmd(f'make -C {test_path} TARGETS="{target}" TEST_PROGS={prog} TEST_GEN_PROGS="" run_tests')
+            try:
+                vm.drain_to_prompt(deadline=deadline)
+                retcode = vm.bash_prev_retcode()
+            except TimeoutError:
+                print(f"INFO: thr-{thr_id} test timed out:", prog)
+                vm.kill_current_cmd()
+                retcode = 1
+
+            t2 = datetime.datetime.now()
+
+            indicators = guess_indicators(vm.log_out)
+            result = result_from_indicators(retcode, indicators)
+
+            vm.check_health()
+
+            crashes = None
+            if vm.fail_state == 'oops':
+                print(f"INFO: thr-{thr_id} test crashed kernel:", prog)
+                crashes = vm.extract_crash(results_path + f'/vm-crash-thr{thr_id}-{vm_id}')
+                # Extraction will clear/discard false-positives (ignored traces)
+                # check VM is still in failed state
+                if vm.fail_state:
+                    result = "fail"
+
+            print(f"INFO: thr-{thr_id} {prog} >> retcode:", retcode,
+                  "result:", result, "found", indicators)
+
+            if is_retry:
+                outcome = work_item
+                outcome['retry'] = result
             else:
-                prev_results = None
+                outcome = {'tid': test_id, 'prog': prog, 'target': target,
+                           'test': test_name, 'file_name': file_name,
+                           'result': result, 'time': (t2 - t1).total_seconds()}
+                if crashes:
+                    outcome['crashes'] = crashes
 
-            # this will only parse nested tests inside the TAP comments
-            nested_tests = parse_nested_tests(vm.log_out, namify, prev_results)
-            if nested_tests:
-                outcome['results'] = nested_tests
+            if config.getboolean('ksft', 'nested_tests', fallback=False):
+                if is_retry:
+                    prev_results = outcome['results'] if 'results' in outcome else []
+                else:
+                    prev_results = None
 
-            print(f"INFO: thr-{thr_id} {prog} >> nested tests: {len(nested_tests)}")
+                # this will only parse nested tests inside the TAP comments
+                nested_tests = parse_nested_tests(vm.log_out, namify, prev_results)
+                if nested_tests:
+                    outcome['results'] = nested_tests
 
-        can_retry = not is_retry
+                print(f"INFO: thr-{thr_id} {prog} >> nested tests: {len(nested_tests)}")
 
-        post_check = config.get('ksft', 'post_check', fallback=None)
-        if post_check and not vm.fail_state:
-            vm.cmd(post_check)
-            vm.drain_to_prompt()
-            pc = vm.bash_prev_retcode()
-            if pc != 0:
-                vm.fail_state = "env-check-fail"
-                if result == 'pass':
-                    result = 'fail'
-                    can_retry = False  # Don't waste time, the test is buggy
+            can_retry = not is_retry
 
-        if can_retry and result == 'fail':
-            if live_status_path and live_lock and live_state:
-                with live_lock:
-                    entry = live_state['tests'][test_id - 1]
-                    entry['result'] = result
-                    entry['status'] = 'retry-queued'
-                    entry['time'] = outcome.get('time')
-                    if 'crashes' in outcome:
-                        entry['crashes'] = outcome['crashes']
-                    if 'results' in outcome:
-                        entry['results'] = outcome['results']
-                    _live_status_touch(live_status_path, live_state)
-            in_queue.put(outcome)
-        else:
-            if live_status_path and live_lock and live_state:
-                with live_lock:
-                    entry = live_state['tests'][test_id - 1]
-                    if is_retry:
-                        entry['retry'] = result
-                    else:
+            post_check = config.get('ksft', 'post_check', fallback=None)
+            if post_check and not vm.fail_state:
+                vm.cmd(post_check)
+                vm.drain_to_prompt()
+                pc = vm.bash_prev_retcode()
+                if pc != 0:
+                    vm.fail_state = "env-check-fail"
+                    if result == 'pass':
+                        result = 'fail'
+                        can_retry = False  # Don't waste time, the test is buggy
+
+            if can_retry and result == 'fail':
+                if live_status_path and live_lock and live_state:
+                    with live_lock:
+                        entry = live_state['tests'][test_id - 1]
                         entry['result'] = result
-                    entry['status'] = result
-                    entry['time'] = outcome.get('time')
-                    entry['finished'] = str(datetime.datetime.now(datetime.UTC))
-                    if 'crashes' in outcome:
-                        entry['crashes'] = outcome['crashes']
-                    if 'results' in outcome:
-                        entry['results'] = outcome['results']
-                    _live_status_touch(live_status_path, live_state)
-            out_queue.put(outcome)
+                        entry['status'] = 'retry-queued'
+                        entry['time'] = outcome.get('time')
+                        if 'crashes' in outcome:
+                            entry['crashes'] = outcome['crashes']
+                        if 'results' in outcome:
+                            entry['results'] = outcome['results']
+                        _live_status_touch(live_status_path, live_state)
+                in_queue.put(outcome)
+            else:
+                if live_status_path and live_lock and live_state:
+                    with live_lock:
+                        entry = live_state['tests'][test_id - 1]
+                        if is_retry:
+                            entry['retry'] = result
+                        else:
+                            entry['result'] = result
+                        entry['status'] = result
+                        entry['time'] = outcome.get('time')
+                        entry['finished'] = str(datetime.datetime.now(datetime.UTC))
+                        if 'crashes' in outcome:
+                            entry['crashes'] = outcome['crashes']
+                        if 'results' in outcome:
+                            entry['results'] = outcome['results']
+                        _live_status_touch(live_status_path, live_state)
+                out_queue.put(outcome)
 
-        vm.dump_log(results_path + '/' + file_name, result=retcode,
-                    info={"thr-id": thr_id, "vm-id": vm_id, "time": (t2 - t1).total_seconds(),
-                          "found": indicators, "vm_state": vm.fail_state})
+            vm.dump_log(results_path + '/' + file_name, result=retcode,
+                        info={"thr-id": thr_id, "vm-id": vm_id, "time": (t2 - t1).total_seconds(),
+                              "found": indicators, "vm_state": vm.fail_state})
 
-        if vm.fail_state:
-            print(f"INFO: thr-{thr_id} VM {vm.fail_state}, destroying it")
-            vm.stop()
-            vm.dump_log(results_path + f'/vm-stop-thr{thr_id}-{vm_id}')
-            vm = None
+            if vm.fail_state:
+                print(f"INFO: thr-{thr_id} VM {vm.fail_state}, destroying it")
+                vm = _stop_vm(vm, results_path, thr_id, vm_id, "vm-stop")
+        finally:
+            in_queue.task_done()
+            if scheduler is not None:
+                scheduler.release_slot(thr_id)
+                scheduler.note_queue_change()
+            idle_since = time.monotonic()
 
     if vm is not None:
-        vm.capture_gcov(results_path + f'/kernel-thr{thr_id}-{vm_id}.lcov')
-        vm.stop()
-        vm.dump_log(results_path + f'/vm-stop-thr{thr_id}-{vm_id}')
+        vm = _stop_vm(vm, results_path, thr_id, vm_id, "vm-stop", capture_gcov=True)
     return
 
 
 def vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
-              live_status_path=None, live_lock=None, live_state=None):
+              live_status_path=None, live_lock=None, live_state=None,
+              scheduler=None):
     try:
         _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
                    live_status_path=live_status_path, live_lock=live_lock,
-                   live_state=live_state)
+                   live_state=live_state, scheduler=scheduler)
     except Exception:
         print(f"ERROR: thr-{thr_id} has crashed")
         raise
@@ -348,29 +402,57 @@ def test(binfo, rinfo, cbarg):
         i += 1
         in_queue.put({'tid': i, 'target': prog[0], 'prog': prog[1]})
 
-    # In case we have multiple tests kicking off on the same machine,
-    # add optional wait to make sure others have finished building
-    load_tgt = config.getfloat("cfg", "wait_loadavg", fallback=None)
-    load_ival = config.getfloat("cfg", "wait_loadavg_ival", fallback=30)
     thr_cnt = int(config.get("cfg", "thread_cnt"))
     delay = float(config.get("cfg", "thread_spawn_delay", fallback=0))
+    target_cpu_pct = config.getfloat("cfg", "scheduler_target_cpu_pct", fallback=90)
+    sample_period_sec = config.getfloat("cfg", "scheduler_sample_period_sec", fallback=1)
+    history_secs = config.getfloat("cfg", "scheduler_history_sec", fallback=5)
+    up_hysteresis_pct = config.getfloat("cfg", "scheduler_up_hysteresis_pct", fallback=4)
+    down_hysteresis_pct = config.getfloat("cfg", "scheduler_down_hysteresis_pct", fallback=2)
+    min_available_mem_mib = config.getfloat("cfg", "scheduler_min_available_mem_mib", fallback=0)
+    max_dirty_mib = config.getfloat("cfg", "scheduler_max_dirty_mib", fallback=512)
+    vm_idle_shutdown_sec = config.getfloat("cfg", "scheduler_vm_idle_shutdown_sec", fallback=15)
+    min_workers = config.getint("cfg", "scheduler_min_workers", fallback=0)
 
-    for i in range(thr_cnt):
-        # Lower the wait for subsequent VMs
-        if i == 1:
-            time.sleep(delay)
-            load_ival /= 2
-        wait_loadavg(load_tgt, check_ival=load_ival)
-        print("INFO: starting VM", i)
-        threads.append(threading.Thread(target=vm_thread,
-                                        args=[config, results_path, i, hard_stop,
-                                              in_queue, out_queue,
-                                              live_status_path, live_lock,
-                                              live_status]))
-        threads[i].start()
+    scheduler = DynamicWorkerScheduler(
+        max_workers=thr_cnt,
+        min_workers=min_workers,
+        target_cpu_pct=target_cpu_pct,
+        sample_period_sec=sample_period_sec,
+        history_secs=history_secs,
+        up_hysteresis_pct=up_hysteresis_pct,
+        down_hysteresis_pct=down_hysteresis_pct,
+        min_available_mem_mib=min_available_mem_mib,
+        max_dirty_mib=max_dirty_mib,
+        vm_idle_shutdown_sec=vm_idle_shutdown_sec,
+        vm_start_cooldown_sec=delay,
+        status_cb=lambda snapshot: _scheduler_status_touch(
+            live_status_path, live_lock, live_status, snapshot
+        ),
+        log=print,
+    )
+    scheduler.start()
 
-    for i in range(thr_cnt):
-        threads[i].join()
+    if live_status_path and live_status:
+        with live_lock:
+            live_status['scheduler'] = scheduler.snapshot()
+            live_status['scheduler']['guest_mem_mib'] = size_to_mib(config.get('vm', 'mem'))
+            _live_status_touch(live_status_path, live_status)
+
+    try:
+        for i in range(thr_cnt):
+            print("INFO: starting worker", i)
+            threads.append(threading.Thread(target=vm_thread,
+                                            args=[config, results_path, i, hard_stop,
+                                                  in_queue, out_queue,
+                                                  live_status_path, live_lock,
+                                                  live_status, scheduler]))
+            threads[i].start()
+
+        for i in range(thr_cnt):
+            threads[i].join()
+    finally:
+        scheduler.stop()
 
     cases = []
     while not out_queue.empty():
@@ -392,6 +474,7 @@ def test(binfo, rinfo, cbarg):
 
     if live_status_path and live_status:
         with live_lock:
+            live_status['scheduler'] = scheduler.snapshot()
             live_status['finished'] = True
             live_status['status'] = 'complete'
             _live_status_touch(live_status_path, live_status)

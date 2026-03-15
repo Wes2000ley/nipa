@@ -58,7 +58,7 @@ Common knobs:
   trigger a full clean rebuild, no clean rebuild, or a clean rebuild only when
   the config inputs change
 - ``--explain`` prints the fully resolved branch/base/cache/build plan and exits
-- ``--threads N|auto`` controls the local vmksft worker thread count
+- ``--threads N|auto`` controls the local vmksft worker cap
 - ``--cpus N|auto`` controls guest CPU count
 - ``--memory SIZE|auto`` controls guest RAM
 - ``--init-prompt PROMPT`` overrides the initial guest prompt if virtme-ng
@@ -80,10 +80,11 @@ ordinary source edits use incremental ``vng --build`` rebuilds and only forces
 you want the stricter CI-style clean build behavior on every tree change.
 
 On larger hosts the default resource sizing is intentionally aggressive. The
-wrapper auto-sizes guest CPU count, guest RAM, and thread count from the host's
-available CPUs and RAM so the run uses most of the machine instead of the old
-fixed ``4 x 4G x 4 threads`` profile. Override the auto values explicitly if
-you want a smaller or larger footprint.
+wrapper auto-sizes guest CPU count and guest RAM, and it derives the automatic
+worker cap from host memory rather than from a fixed CPU formula. The runtime
+scheduler inside ``local_vmksft_p.py`` then tries to hold the host near 90%
+CPU utilization by admitting or withholding new work dynamically. Override the
+auto values explicitly if you want a smaller or larger footprint.
 
 After the executor starts, the wrapper serves a stable site root under
 ``local/state/vmksft-net/site/`` instead of exposing only the current run's

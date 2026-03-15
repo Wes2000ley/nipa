@@ -7,3 +7,4 @@ ui/contest/
 ui/static/
 __pycache__/
 results/
+/local/state/

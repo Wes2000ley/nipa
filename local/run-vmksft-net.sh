@@ -3,8 +3,11 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-readonly NIPA_ROOT="$(cd -P -- "${SCRIPT_DIR}/.." && pwd -P)"
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+NIPA_ROOT="$(cd -P -- "${SCRIPT_DIR}/.." && pwd -P)"
+readonly NIPA_ROOT
+readonly UI_ROOT="${NIPA_ROOT}/ui"
 readonly DEFAULT_TREE="/home/wes/net"
 readonly DEFAULT_STATE_DIR="${SCRIPT_DIR}/state/vmksft-net"
 readonly DEFAULT_THREADS="auto"
@@ -15,7 +18,6 @@ readonly DEFAULT_HTTP_PORT=8888
 readonly DEFAULT_PUBLIC_HOST="192.168.50.103"
 readonly DEFAULT_BRANCH_NAME="local-vmksft-net"
 readonly DEFAULT_MODE="committed"
-readonly DEFAULT_RESERVED_CPUS=2
 readonly DEFAULT_RESERVED_MEM_GB=8
 readonly DEFAULT_VM_MEM_GB=2
 readonly DEFAULT_THREAD_SPAWN_DELAY=0.5
@@ -24,6 +26,8 @@ readonly DEFAULT_DIRTY_COMMIT_MSG="local-vmksft dirty snapshot"
 readonly DEFAULT_PATCH_COMMIT_PREFIX="local-vmksft patch snapshot"
 readonly EXECUTOR_NAME="vmksft-net-local"
 readonly EXECUTOR_TARGET="net net/af_unix net/can net/forwarding net/hsr net/mptcp net/netfilter net/openvswitch net/ovpn net/packetdrill net/tcp_ao nci drivers/net/bonding drivers/net/netconsole drivers/net/netdevsim drivers/net/team drivers/net/virtio_net"
+readonly CONTEST_HTML_TEMPLATE="${SCRIPT_DIR}/contest.html"
+
 
 TREE="${DEFAULT_TREE}"
 STATE_DIR="${DEFAULT_STATE_DIR}"
@@ -64,7 +68,6 @@ DIRTY_PATCH=""
 PATCH_FILES=()
 PATCH_COUNT=0
 SOURCE_BRANCH=""
-ROOT_INDEX=""
 EXECUTOR_INDEX=""
 SUMMARY_JSON=""
 MANIFEST_PATH=""
@@ -75,8 +78,6 @@ SUMMARY_HTML=""
 RUN_META_JSON=""
 SITE_ROOT=""
 SITE_RUNS_ROOT=""
-SITE_INDEX=""
-SITE_HISTORY_JSON=""
 SITE_REFRESH_LOG=""
 RUN_PUBLIC_PREFIX=""
 
@@ -429,13 +430,13 @@ apply_patch_series() {
 }
 
 prepare_committed_source() {
-	BRANCH_NAME="${DEFAULT_BRANCH_NAME}-committed"
+	BRANCH_NAME="$(branch_name_for_mode committed)"
 	BRANCH_BASE="${TREE_BASE}"
 	publish_branch_from_repo "${TREE}" "${TREE_HEAD}" "${BRANCH_NAME}"
 }
 
 prepare_dirty_source() {
-	BRANCH_NAME="${DEFAULT_BRANCH_NAME}-dirty"
+	BRANCH_NAME="$(branch_name_for_mode dirty)"
 	BRANCH_BASE="${TREE_HEAD}"
 	DIRTY_PATCH="${RUN_DIR}/dirty-tracked.patch"
 
@@ -459,7 +460,7 @@ prepare_dirty_source() {
 }
 
 prepare_patches_source() {
-	BRANCH_NAME="${DEFAULT_BRANCH_NAME}-patches"
+	BRANCH_NAME="$(branch_name_for_mode patches)"
 	BRANCH_BASE="${TREE_HEAD}"
 
 	prepare_materialize_repo
@@ -491,15 +492,15 @@ resolve_mode_metadata() {
 
 	case "${MODE}" in
 	committed)
-		BRANCH_NAME="${DEFAULT_BRANCH_NAME}-committed"
+		BRANCH_NAME="$(branch_name_for_mode committed)"
 		BRANCH_BASE="${TREE_BASE}"
 		;;
 	dirty)
-		BRANCH_NAME="${DEFAULT_BRANCH_NAME}-dirty"
+		BRANCH_NAME="$(branch_name_for_mode dirty)"
 		BRANCH_BASE="${TREE_HEAD}"
 		;;
 	patches)
-		BRANCH_NAME="${DEFAULT_BRANCH_NAME}-patches"
+		BRANCH_NAME="$(branch_name_for_mode patches)"
 		BRANCH_BASE="${TREE_HEAD}"
 		collect_patch_files
 		;;
@@ -509,13 +510,19 @@ resolve_mode_metadata() {
 	esac
 }
 
+branch_name_for_mode() {
+	local mode="$1"
+
+	printf '%s-%s-%s\n' "${DEFAULT_BRANCH_NAME}" "${mode}" "${RUN_ID}"
+}
+
 print_explain_and_exit() {
 	local results_root
 	local run_url
 	local patch_line
 
 	results_root="${STATE_DIR}/runs/<timestamp>/www/${EXECUTOR_NAME}"
-	run_url="http://${PUBLIC_HOST}:${HTTP_PORT}/${EXECUTOR_NAME}"
+	run_url="http://${PUBLIC_HOST}:${HTTP_PORT}/runs/<timestamp>/${EXECUTOR_NAME}"
 
 	case "${MODE}" in
 	committed)
@@ -599,6 +606,7 @@ What this means in practice:
 EOF
 }
 
+# shellcheck disable=SC2317
 cleanup() {
 	local rc=$?
 
@@ -615,6 +623,7 @@ cleanup() {
 	return "${rc}"
 }
 
+# shellcheck disable=SC2317
 handle_stop_signal() {
 	local sig="$1"
 
@@ -627,20 +636,60 @@ handle_stop_signal() {
 	exit 130
 }
 
-stage_dashboard_assets() {
+stage_ui_assets() {
 	local destination="$1"
+	local asset
 
 	mkdir -p "${destination}/assets"
-	cp "${SCRIPT_DIR}/dashboard.css" "${destination}/assets/dashboard.css"
-	cp "${SCRIPT_DIR}/dashboard.js" "${destination}/assets/dashboard.js"
-	cp "${SCRIPT_DIR}/summary-view.css" "${destination}/assets/summary-view.css"
-	cp "${SCRIPT_DIR}/summary-view.js" "${destination}/assets/summary-view.js"
+	cp "${SCRIPT_DIR}/nipa.css" "${destination}/assets/nipa.css"
+	cp "${SCRIPT_DIR}/nipa.js" "${destination}/assets/nipa.js"
+	cp "${SCRIPT_DIR}/contest.js" "${destination}/assets/contest.js"
+
+	for asset in \
+		"favicon-contest.png" \
+		"favicon-status.png" \
+		"favicon-stats.png" \
+		"favicon-flakes.png" \
+		"favicon-nic.png"
+	do
+		cp "${UI_ROOT}/${asset}" "${destination}/${asset}"
+	done
+}
+
+write_redirect_page() {
+	local path="$1"
+	local target="$2"
+	local title="$3"
+
+	cat > "${path}" <<EOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0; url=${target}">
+  <title>${title}</title>
+</head>
+<body>
+  <p>Redirecting to <a href="${target}">${target}</a>.</p>
+</body>
+</html>
+EOF
+}
+
+stage_contest_shell() {
+	local destination="$1"
+
+	cp "${CONTEST_HTML_TEMPLATE}" "${destination}/contest.html"
+	write_redirect_page "${destination}/index.html" "./contest.html" "${EXECUTOR_NAME} result log"
 }
 
 stage_run_artifact_links() {
+	local config_name
+
+	config_name="$(basename "${CONFIG_PATH}")"
 	ln -sfn ../executor.log "${WEB_ROOT}/executor.log"
 	ln -sfn ../http-server.log "${WEB_ROOT}/http-server.log"
-	ln -sfn ../$(basename "${CONFIG_PATH}") "${WEB_ROOT}/$(basename "${CONFIG_PATH}")"
+	ln -sfn "../${config_name}" "${WEB_ROOT}/${config_name}"
 }
 
 write_run_metadata() {
@@ -681,111 +730,17 @@ with open(path, "w", encoding="utf-8") as fp:
 PY
 }
 
-write_site_index() {
-	cat > "${SITE_INDEX}" <<EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${EXECUTOR_NAME} local dashboard</title>
-  <link rel="stylesheet" href="./assets/dashboard.css">
-</head>
-<body>
-  <script id="page-config" type="application/json">
-{
-  "pageType": "site",
-  "title": "${EXECUTOR_NAME} local dashboard",
-  "subtitle": "Live local NIPA vmksft view with previous runs and direct artifact browsing.",
-  "runMetaUrl": "/latest/run-meta.json",
-  "liveStatusUrl": "/latest/${EXECUTOR_NAME}/live-status.json",
-  "summaryUrl": "/latest/${EXECUTOR_NAME}/summary.json",
-  "historyUrl": "/history.json",
-  "homeUrl": "/",
-  "summaryPageUrl": "/latest/${EXECUTOR_NAME}/summary.html",
-  "resultsManifestUrl": "/latest/${EXECUTOR_NAME}/jsons/results.json",
-  "artifactsUrl": "/latest/${EXECUTOR_NAME}/results/",
-  "executorLogUrl": "/latest/executor.log",
-  "httpLogUrl": "/latest/http-server.log",
-  "configUrl": "/latest/$(basename "${CONFIG_PATH}")",
-  "branchesUrl": "/contest/branches.json"
-}
-  </script>
-  <script src="./assets/dashboard.js"></script>
-</body>
-</html>
-EOF
-}
-
 write_run_dashboard_page() {
-	cat > "${ROOT_INDEX}" <<EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${EXECUTOR_NAME} run ${RUN_ID}</title>
-  <link rel="stylesheet" href="./assets/dashboard.css">
-</head>
-<body>
-  <script id="page-config" type="application/json">
-{
-  "pageType": "run",
-  "title": "${EXECUTOR_NAME} run ${RUN_ID}",
-  "subtitle": "Contest-style live view for this local vmksft run, with direct links to raw artifacts.",
-  "runMetaUrl": "${RUN_PUBLIC_PREFIX}/run-meta.json",
-  "liveStatusUrl": "${RUN_PUBLIC_PREFIX}/${EXECUTOR_NAME}/live-status.json",
-  "summaryUrl": "${RUN_PUBLIC_PREFIX}/${EXECUTOR_NAME}/summary.json",
-  "historyUrl": "/history.json",
-  "homeUrl": "/",
-  "summaryPageUrl": "${RUN_PUBLIC_PREFIX}/${EXECUTOR_NAME}/summary.html",
-  "resultsManifestUrl": "${RUN_PUBLIC_PREFIX}/${EXECUTOR_NAME}/jsons/results.json",
-  "artifactsUrl": "${RUN_PUBLIC_PREFIX}/${EXECUTOR_NAME}/results/",
-  "executorLogUrl": "${RUN_PUBLIC_PREFIX}/executor.log",
-  "httpLogUrl": "${RUN_PUBLIC_PREFIX}/http-server.log",
-  "configUrl": "${RUN_PUBLIC_PREFIX}/$(basename "${CONFIG_PATH}")",
-  "branchesUrl": "/contest/branches.json"
-}
-  </script>
-  <script src="./assets/dashboard.js"></script>
-</body>
-</html>
-EOF
+	write_redirect_page "${WEB_ROOT}/index.html" "/contest.html?branch=${BRANCH_NAME}" "${EXECUTOR_NAME} run ${RUN_ID}"
+	write_redirect_page "${WEB_ROOT}/contest.html" "/contest.html?branch=${BRANCH_NAME}" "${EXECUTOR_NAME} run ${RUN_ID}"
 }
 
 write_executor_dashboard_alias() {
-	cat > "${EXECUTOR_INDEX}" <<EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="refresh" content="0; url=../index.html">
-  <title>${EXECUTOR_NAME} redirect</title>
-</head>
-<body>
-  <p>Redirecting to the run dashboard. If the redirect does not happen, open <a href="../index.html">../index.html</a>.</p>
-</body>
-</html>
-EOF
+	write_redirect_page "${EXECUTOR_INDEX}" "../index.html" "${EXECUTOR_NAME} redirect"
 }
 
 write_pending_summary_page() {
-	cat > "${SUMMARY_HTML}" <<EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${EXECUTOR_NAME} final summary pending</title>
-</head>
-<body>
-  <main>
-    <h1>${EXECUTOR_NAME} final summary pending</h1>
-    <p>The run is still active. Use the <a href="../index.html">run dashboard</a> to watch current test status.</p>
-  </main>
-</body>
-</html>
-EOF
+	write_redirect_page "${SUMMARY_HTML}" "../index.html" "${EXECUTOR_NAME} summary redirect"
 }
 
 write_infra_failure_page() {
@@ -797,14 +752,13 @@ write_infra_failure_page() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="shortcut icon" href="/favicon-status.png" type="image/png">
   <title>${EXECUTOR_NAME} infrastructure failure</title>
 </head>
 <body>
-  <main>
-    <h1>${EXECUTOR_NAME} infrastructure failure</h1>
-    <p>${reason}</p>
-    <p><a href="../index.html">run dashboard</a> | <a href="../executor.log">executor.log</a> | <a href="../http-server.log">http-server.log</a> | <a href="/contest/branches.json">branches.json</a></p>
-  </main>
+  <p>The executor did not produce a readable final summary page.</p>
+  <p>Reason: ${reason}</p>
+  <p>Open <a href="../index.html">the run view</a>, <a href="../executor.log">executor.log</a>, or <a href="../http-server.log">http-server.log</a>.</p>
 </body>
 </html>
 EOF
@@ -1004,15 +958,12 @@ SITE_RUNS_ROOT="${SITE_ROOT}/runs"
 WEB_ROOT="${RUN_DIR}/www"
 EXECUTOR_ROOT="${WEB_ROOT}/${EXECUTOR_NAME}"
 CONFIG_PATH="${RUN_DIR}/${EXECUTOR_NAME}.ini"
-ROOT_INDEX="${WEB_ROOT}/index.html"
 EXECUTOR_INDEX="${EXECUTOR_ROOT}/index.html"
 SUMMARY_JSON="${EXECUTOR_ROOT}/summary.json"
 MANIFEST_PATH="${EXECUTOR_ROOT}/jsons/results.json"
 LIVE_STATUS_JSON="${EXECUTOR_ROOT}/live-status.json"
 SUMMARY_HTML="${EXECUTOR_ROOT}/summary.html"
 RUN_META_JSON="${WEB_ROOT}/run-meta.json"
-SITE_INDEX="${SITE_ROOT}/index.html"
-SITE_HISTORY_JSON="${SITE_ROOT}/history.json"
 RUN_PUBLIC_PREFIX="/runs/${RUN_ID}"
 
 if (( FRESH_CACHE == 1 )); then
@@ -1037,11 +988,10 @@ fi
 
 prepare_source_snapshot
 prepare_worker_tree
-stage_dashboard_assets "${SITE_ROOT}"
-stage_dashboard_assets "${WEB_ROOT}"
+stage_ui_assets "${SITE_ROOT}"
+stage_contest_shell "${SITE_ROOT}"
 stage_run_artifact_links
 write_run_metadata
-write_site_index
 write_run_dashboard_page
 write_executor_dashboard_alias
 write_pending_summary_page
@@ -1119,7 +1069,7 @@ results_path = results
 live_status_path = ${LIVE_STATUS_JSON}
 
 [www]
-url = http://${PUBLIC_HOST}:${HTTP_PORT}/${EXECUTOR_NAME}
+url = http://${PUBLIC_HOST}:${HTTP_PORT}${RUN_PUBLIC_PREFIX}/${EXECUTOR_NAME}
 
 [env]
 paths =

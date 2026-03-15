@@ -5,8 +5,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import shutil
-from pathlib import Path
 import urllib.parse
 
 
@@ -16,13 +14,9 @@ RESULT_ORDER = {
     "pass": 2,
 }
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-SUMMARY_TEMPLATE = SCRIPT_DIR / "summary-view.html"
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build JSON data and a static HTML shell for the local vmksft summary page.",
+        description="Build JSON data and a redirect shell for the local vmksft summary page.",
     )
     parser.add_argument("--manifest", required=True,
                         help="Path to vmksft results.json manifest")
@@ -165,12 +159,23 @@ def write_json(path, data):
         json.dump(data, fp, indent=2, sort_keys=True)
 
 
-def stage_summary_shell(path):
-    if not SUMMARY_TEMPLATE.is_file():
-        raise RuntimeError(f"missing summary template: {SUMMARY_TEMPLATE}")
-
+def write_summary_redirect(path, dashboard_url):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    shutil.copyfile(SUMMARY_TEMPLATE, path)
+    with open(path, "w", encoding="utf-8") as fp:
+        fp.write(
+            f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0; url={dashboard_url}">
+  <title>vmksft summary redirect</title>
+</head>
+<body>
+  <p>Redirecting to the run dashboard. If the redirect does not happen, open <a href="{dashboard_url}">{dashboard_url}</a>.</p>
+</body>
+</html>
+"""
+        )
 
 
 def main():
@@ -179,7 +184,7 @@ def main():
     summary = summary_payload(args, entry, detail_path, detail)
 
     write_json(args.summary_json, summary)
-    stage_summary_shell(args.html)
+    write_summary_redirect(args.html, args.dashboard_url)
 
     print("Result summary:")
     print(f"  overall: {summary['overall']}")
@@ -187,7 +192,7 @@ def main():
         print(f"  {key}: {summary['counts'][key]}")
     print(f"  retry_failures: {summary['retry_failures']}")
     print(f"  detail_json: {detail_path}")
-    print(f"  html_summary: {args.html}")
+    print(f"  html_summary: {args.html} -> {args.dashboard_url}")
 
 
 if __name__ == "__main__":

@@ -5,11 +5,26 @@ import argparse
 import datetime as dt
 import json
 from pathlib import Path
+from urllib.parse import urlparse
+
+
+PENDING_STATUSES = {
+    "queued",
+    "running",
+    "retry-queued",
+    "retry-running",
+    "pending",
+    "building",
+    "complete",
+    "build-failed",
+}
+
+FINAL_RESULTS = {"pass", "skip", "warn", "fail"}
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build local run history JSON for the custom vmksft dashboard.",
+        description="Build local harness history plus contest-compatible result JSON.",
     )
     parser.add_argument("--state-dir", required=True,
                         help="Local harness state directory")
@@ -29,8 +44,7 @@ def load_json(path):
 
 
 def result_bucket(result):
-    if result in {"queued", "running", "retry-queued", "retry-running",
-                  "pending", "building", "complete", "build-failed"}:
+    if result in PENDING_STATUSES:
         return "pending"
     return result
 
@@ -93,6 +107,79 @@ def path_mtime_iso(path):
         return ""
 
 
+def contest_branch_name(branch, run_id):
+    base = branch or "local-vmksft-net"
+
+    if run_id and run_id in base:
+        return base
+    if not run_id:
+        return base
+    return f"{base}-{run_id}"
+
+
+def load_final_detail(executor_root):
+    manifest = load_json(executor_root / "jsons" / "results.json")
+    if not isinstance(manifest, list):
+        return None
+
+    for entry in reversed(manifest):
+        if not isinstance(entry, dict):
+            continue
+
+        detail_url = entry.get("url")
+        if not detail_url:
+            continue
+
+        detail_name = Path(urlparse(detail_url).path).name
+        if not detail_name:
+            continue
+
+        detail = load_json(executor_root / "jsons" / detail_name)
+        if detail:
+            return detail
+
+    return None
+
+
+def normalize_final_result(result):
+    normalized = dict(result)
+
+    if normalized.get("result") not in FINAL_RESULTS:
+        normalized["result"] = "warn"
+    if normalized.get("retry") not in FINAL_RESULTS:
+        normalized.pop("retry", None)
+
+    if "results" in normalized and isinstance(normalized["results"], list):
+        normalized["results"] = [normalize_final_result(entry) for entry in normalized["results"]]
+
+    return normalized
+
+
+def normalize_live_value(value):
+    if value in FINAL_RESULTS:
+        return value
+    if value:
+        return "warn"
+    return ""
+
+
+def live_result_from_test(test):
+    result = {
+        "group": test.get("group", ""),
+        "test": test.get("test", ""),
+        "result": normalize_live_value(test.get("result")) or normalize_live_value(test.get("status")) or "warn",
+        "link": test.get("log_url", ""),
+    }
+
+    if test.get("retry") or test.get("status") in {"retry-running", "retry-queued"}:
+        result["retry"] = normalize_live_value(test.get("retry")) or "warn"
+
+    if "time" in test:
+        result["time"] = test.get("time")
+
+    return result
+
+
 def build_run_entry(run_dir, executor_name, latest_run_id):
     run_id = run_dir.name
     web_root = run_dir / "www"
@@ -131,10 +218,12 @@ def build_run_entry(run_dir, executor_name, latest_run_id):
         updated = path_mtime_iso(executor_root / "summary.json")
         finished = True
 
+    published_branch = meta.get("published_branch") or (live_status or {}).get("branch", "")
     entry = {
         "run_id": run_id,
         "current": run_id == latest_run_id,
-        "branch": meta.get("published_branch") or (live_status or {}).get("branch", ""),
+        "branch": published_branch,
+        "ui_branch": contest_branch_name(published_branch, run_id),
         "branch_date": meta.get("branch_date") or (live_status or {}).get("start", ""),
         "mode": meta.get("mode", ""),
         "source_branch": meta.get("source_branch", ""),
@@ -160,6 +249,64 @@ def build_run_entry(run_dir, executor_name, latest_run_id):
     return entry
 
 
+def build_contest_entry(run_dir, executor_name):
+    run_id = run_dir.name
+    web_root = run_dir / "www"
+    meta = load_json(web_root / "run-meta.json") or {}
+    executor_root = web_root / executor_name
+    live_status = load_json(executor_root / "live-status.json")
+    detail = load_final_detail(executor_root)
+
+    if not meta and not live_status and not detail:
+        return None
+
+    published_branch = meta.get("published_branch")
+    if not published_branch:
+        if detail:
+            published_branch = detail.get("branch", "")
+        else:
+            published_branch = (live_status or {}).get("branch", "")
+
+    branch = contest_branch_name(published_branch, run_id)
+    remote = meta.get("source_branch") or meta.get("mode") or "local"
+
+    if detail:
+        results = [normalize_final_result(result) for result in detail.get("results", [])]
+        start = detail.get("start", "")
+        end = detail.get("end", "") or detail.get("start", "")
+        executor = detail.get("executor", executor_name)
+    elif live_status:
+        results = [live_result_from_test(test) for test in live_status.get("tests", [])]
+        start = live_status.get("start", "")
+        end = live_status.get("updated", "") or live_status.get("start", "")
+        executor = live_status.get("executor", executor_name)
+    else:
+        results = []
+        start = meta.get("branch_date", "")
+        end = meta.get("branch_date", "")
+        executor = executor_name
+
+    return {
+        "branch": branch,
+        "branch_url": f"/runs/{run_id}/index.html",
+        "remote": remote,
+        "executor": executor,
+        "start": start,
+        "end": end,
+        "summary_url": f"/runs/{run_id}/{executor_name}/summary.html",
+        "results": results,
+    }
+
+
+def entry_time(value):
+    stamp = value.get("end") or value.get("start") or ""
+
+    try:
+        return dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return dt.datetime.min.replace(tzinfo=dt.UTC)
+
+
 def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".new")
@@ -182,10 +329,17 @@ def main():
 
     latest_run_id = run_dirs[0].name if run_dirs else ""
     runs = []
+    contest_rows = []
     for run_dir in run_dirs:
         entry = build_run_entry(run_dir, args.executor_name, latest_run_id)
         if entry:
             runs.append(entry)
+
+        contest_entry = build_contest_entry(run_dir, args.executor_name)
+        if contest_entry:
+            contest_rows.append(contest_entry)
+
+    contest_rows.sort(key=entry_time, reverse=True)
 
     payload = {
         "generated": dt.datetime.now(dt.UTC).isoformat(),
@@ -193,6 +347,8 @@ def main():
         "runs": runs,
     }
     write_json(site_root / "history.json", payload)
+    write_json(site_root / "contest" / "all-results.json", contest_rows)
+    write_json(site_root / "contest" / "filters.json", {"ignore-results": []})
 
 
 if __name__ == "__main__":

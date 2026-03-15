@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PW contest</title>
+    <link rel="shortcut icon" href="/favicon-contest.png" type="image/png" />
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
+    <script src="./assets/nipa.js"></script>
+    <script src="./assets/contest.js"></script>
+    <script>
+        nipa_load_sitemap();
+        nipa_load_sponsors();
+    </script>
+    <link rel="stylesheet" href="./assets/nipa.css">
+    <style>
+      .column {
+        flex: max-content;
+      }
+    </style>
+</head>
+<body onload="do_it();">
+<div id="sitemap"></div>
+<div class="row-small">
+    <fieldset id="loading-fieldset">
+        <legend>Loading:</legend>
+        <label for="ld_branch">Single branch:</label>
+        <br />
+        <input id="ld_branch" name="ld-pw" disabled />
+        <div style="height:1em;">&nbsp;</div>
+        <label for="ld_cnt">Branch count:</label>
+        <br />
+        <input type="number" step="25" id="ld_cnt" name="ld-pw" value="125" style="width:8em;" disabled />
+        <div style="height:1em;">&nbsp;</div>
+        <input type="checkbox" id="ld-cases" name="ld-pw" disabled />
+        <label for="ld-cases">individual sub-cases</label>
+    </fieldset>
+    <fieldset>
+      <legend>Filtering:</legend>
+
+      <div class="row-small">
+          <div class="column-small">
+              <div>
+                  <input type="checkbox" id="pass" name="fl-pw" disabled checked />
+                  <label for="pass">Pass</label>
+              </div>
+              <div>
+                  <input type="checkbox" id="skip" name="fl-pw" disabled checked />
+                  <label for="skip">Skip</label>
+              </div>
+              <div>
+                  <input type="checkbox" id="warn" name="fl-pw" disabled checked />
+                  <label for="warn">Warn</label>
+              </div>
+              <div>
+                  <input type="checkbox" id="fail" name="fl-pw" disabled checked />
+                  <label for="fail">Fail</label>
+              </div>
+          </div>
+          <div class="column-small">
+              <div>
+                  <label for="remote">Remote</label>
+                  <select id="remote" name="fl-pw" disabled>
+                      <option value="">-- all --</option>
+                  </select>
+              </div>
+              <div>
+                  <label for="branch">Branch</label>
+                  <select id="branch" name="fl-pw" disabled>
+                      <option value="">-- all --</option>
+                  </select>
+              </div>
+              <div>
+                  <label for="executor">Executor</label>
+                  <select id="executor" name="fl-pw" disabled>
+                      <option value="">-- all --</option>
+                  </select>
+              </div>
+          </div>
+          <div class="column-small">
+              <div>
+                  <input type="checkbox" id="pw-y" name="fl-pw" disabled checked />
+                  <label for="pw-y">Reported to patchwork</label>
+              </div>
+              <div>
+                  <input type="checkbox" id="pw-n" name="fl-pw" disabled checked />
+                  <label for="pw-n">Ignored by patchwork</label>
+              </div>
+              <div>
+                  <label for="test">Test</label>
+                  <input type="text" id="test" name="fl-pw" disabled />
+              </div>
+          </div>
+          <div class="column-small">
+              <span id="filter-info"></span>
+              <br /><br />
+              <p>
+                  <a href="#" id="update-url-button" class="nipa-button">Update URL</a>
+              </p>
+          </div>
+      </div>
+      <div class="row-small">
+          <span id="fl-warn-box" style="color: red">Loading...</span>
+      </div>
+    </fieldset>
+    <div class="box">
+        <p id="open-full-page" style="display: none;">
+            <a href="#" id="open-full-page-link" class="nipa-button">Open full page</a>
+        </p>
+        <p>
+            <a href="https://github.com/linux-netdev/nipa/wiki/How-to-run-netdev-selftests-CI-style" class="nipa-button">How to reproduce</a>
+        </p>
+    </div>
+</div>
+<div class="row">
+    <div class="column">
+        <table id="results">
+            <tr>
+                <th>Date</th>
+                <th>Branch</th>
+                <th>Remote</th>
+                <th>Executor</th>
+                <th>Group</th>
+                <th>Test</th>
+                <th>Result</th>
+                <th>Retry</th>
+                <th>Time</th>
+                <th colspan="3">Links</th>
+            </tr>
+        </table>
+    </div>
+</div>
+</body>
+</html>

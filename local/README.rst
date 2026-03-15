@@ -89,19 +89,23 @@ After the executor starts, the wrapper serves a stable site root under
 ``local/state/vmksft-net/site/`` instead of exposing only the current run's
 ``www/`` tree. The site root has:
 
-- ``/index.html`` as the main local dashboard, showing the latest run live and
-  listing previous runs
-- ``/history.json`` as the backing data for that previous-run table
+- ``/contest.html`` as the main local result log using the shared contest UI
+- ``/index.html`` as a redirect to ``/contest.html``
+- ``/history.json`` as the generated run history metadata
+- ``/contest/all-results.json`` and ``/contest/filters.json`` as the local
+  contest UI data sources
 - ``/latest/`` as a symlink to the most recent run
 - ``/runs/<run-id>/`` as stable URLs for prior runs
 
-Each run also keeps its own contest-style dashboard at
-``/runs/<run-id>/index.html`` and its rendered final summary at
-``/runs/<run-id>/vmksft-net-local/summary.html``.
+Each run keeps its own redirecting dashboard at ``/runs/<run-id>/index.html``.
+That URL lands in the shared contest log with the run's branch preselected.
+The rendered final summary URL at ``/runs/<run-id>/vmksft-net-local/summary.html``
+also redirects back to the same run-scoped contest view, while ``summary.json``
+continues to expose the structured final totals and metadata.
 
-The final summary page is now a static HTML shell from ``local/summary-view.html``
-backed by ``summary.json`` plus the executor's final detail JSON. The Python
-summary builder no longer embeds HTML.
+The Python summary builder still writes ``summary.json`` from the executor's
+final detail JSON, but the HTML side is now just a redirect shell rather than a
+separate local summary UI.
 
 The wrapper uses a small custom local HTTP server so the raw extensionless log
 files under ``results/`` are served as inline text instead of being treated as

@@ -5,7 +5,6 @@ import datetime
 import json
 import os
 import queue
-import shlex
 import shutil
 import subprocess
 import sys
@@ -24,69 +23,20 @@ if str(REMOTE_DIR) not in sys.path:
 from core import NipaLifetime
 from lib import CbArg
 from lib import Fetcher, namify
+from lib import wait_loadavg
 from lib import guess_indicators, parse_nested_tests, result_from_indicators
 
 from host_scheduler import DynamicWorkerScheduler, size_to_mib
 from local_vm import LocalVM, new_local_vm
 
 
-def _extract_make_var_tokens(make_db, var_name):
-    prefixes = (f"{var_name} :=", f"{var_name} =")
-    for line in make_db.splitlines():
-        for prefix in prefixes:
-            if line.startswith(prefix):
-                return [os.path.basename(token)
-                        for token in line[len(prefix):].strip().split()
-                        if token]
-    return []
+def build_test_command(test_path, target, prog):
+    return f'make -C {test_path} TARGETS="{target}" TEST_PROGS={prog} TEST_GEN_PROGS="" run_tests'
 
 
-def get_prog_types(vm, targets, test_path):
-    env = os.environ.copy()
-    if vm.config.get('env', 'paths'):
-        env['PATH'] += ':' + vm.config.get('env', 'paths')
-
-    prog_types = {}
-    for target in targets:
-        target_dir = os.path.join(vm.tree_path, test_path, target)
-        proc = subprocess.run(['make', '-s', '-pn', '-C', target_dir],
-                              cwd=vm.tree_path,
-                              env=env,
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL,
-                              text=True,
-                              check=False)
-
-        found_any = False
-        for var_name in ('TEST_CUSTOM_PROGS', 'TEST_GEN_PROGS', 'TEST_PROGS'):
-            for prog in _extract_make_var_tokens(proc.stdout, var_name):
-                prog_types[(target, prog)] = var_name
-                found_any = True
-
-        if not found_any:
-            print(f"WARN: failed to inspect kselftest metadata for {target}, "
-                  "defaulting to TEST_PROGS")
-
-    return prog_types
-
-
-def build_test_command(test_path, target, prog, prog_var, nstat_history=None):
-    args = ['env']
-    if nstat_history:
-        args.append(f'NSTAT_HISTORY={nstat_history}')
-
-    args.extend([
-        'make',
-        '-C',
-        test_path,
-        f'TARGETS={target}',
-        'TEST_PROGS=',
-        'TEST_GEN_PROGS=',
-        'TEST_CUSTOM_PROGS=',
-        f'{prog_var}={prog}',
-        'run_tests',
-    ])
-    return " ".join(shlex.quote(arg) for arg in args)
+def build_nstat_history_path(thr_id, test_id, prog, is_retry=False):
+    retry_suffix = "-retry" if is_retry else ""
+    return f"/tmp/nipa-nstat-thr{thr_id}-{test_id}-{namify(prog)}{retry_suffix}"
 
 
 def get_prog_list(vm, targets, test_path):
@@ -189,7 +139,6 @@ def _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
         test_id = work_item['tid']
         prog = work_item['prog']
         target = work_item['target']
-        prog_var = work_item.get('prog_var', 'TEST_PROGS')
         test_name = namify(prog)
         file_name = f"{test_id}-{test_name}"
         is_retry = 'result' in work_item
@@ -220,13 +169,11 @@ def _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
 
             print(f"INFO: thr-{thr_id} testing == " + prog)
             t1 = datetime.datetime.now()
-            cmd = build_test_command(test_path, target, prog, prog_var,
-                                     nstat_history=f"/tmp/{file_name}.nstat")
-            vm.cmd(cmd)
+            cmd = build_test_command(test_path, target, prog)
+            nstat_history = build_nstat_history_path(thr_id, test_id, prog, is_retry)
+            vm.cmd(f'NSTAT_HISTORY={nstat_history} {cmd}')
             try:
-                quiet_timeout = max(config.getint('vm', 'default_timeout',
-                                                  fallback=45), 180)
-                vm.drain_to_prompt(dump_after=quiet_timeout, deadline=deadline)
+                vm.drain_to_prompt(deadline=deadline)
                 retcode = vm.bash_prev_retcode()
             except TimeoutError:
                 print(f"INFO: thr-{thr_id} test timed out:", prog)
@@ -431,7 +378,6 @@ def test(binfo, rinfo, cbarg):
         }]
 
     progs = get_prog_list(vm, targets, test_path)
-    prog_types = get_prog_types(vm, targets, test_path)
     progs.sort(reverse=True, key=lambda prog: cbarg.prev_runtime.get(prog, 0))
 
     if live_status_path and live_status:
@@ -470,9 +416,10 @@ def test(binfo, rinfo, cbarg):
             'tid': i,
             'target': prog[0],
             'prog': prog[1],
-            'prog_var': prog_types.get(prog, 'TEST_PROGS'),
         })
 
+    load_tgt = config.getfloat("cfg", "wait_loadavg", fallback=None)
+    load_ival = config.getfloat("cfg", "wait_loadavg_ival", fallback=30)
     thr_cnt = int(config.get("cfg", "thread_cnt"))
     delay = float(config.get("cfg", "thread_spawn_delay", fallback=0))
     target_cpu_pct = config.getfloat("cfg", "scheduler_target_cpu_pct", fallback=90)
@@ -512,6 +459,10 @@ def test(binfo, rinfo, cbarg):
 
     try:
         for i in range(thr_cnt):
+            if i == 1:
+                time.sleep(delay)
+                load_ival /= 2
+            wait_loadavg(load_tgt, check_ival=load_ival)
             print("INFO: starting worker", i)
             threads.append(threading.Thread(target=vm_thread,
                                             args=[config, results_path, i, hard_stop,

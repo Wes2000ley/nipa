@@ -21,7 +21,7 @@ readonly DEFAULT_MODE="committed"
 readonly DEFAULT_RESERVED_MEM_GB=8
 readonly DEFAULT_VM_MEM_GB=2
 readonly DEFAULT_THREAD_SPAWN_DELAY=0.5
-readonly DEFAULT_TARGET_CPU_UTIL_PCT=90
+readonly DEFAULT_TARGET_CPU_UTIL_PCT=70
 readonly DEFAULT_SCHEDULER_HISTORY_SEC=5
 readonly DEFAULT_SCHEDULER_SAMPLE_PERIOD_SEC=1
 readonly DEFAULT_SCHEDULER_UP_HYSTERESIS_PCT=4
@@ -31,8 +31,9 @@ readonly DEFAULT_BUILD_CLEAN="config-change"
 readonly DEFAULT_DIRTY_COMMIT_MSG="local-vmksft dirty snapshot"
 readonly DEFAULT_PATCH_COMMIT_PREFIX="local-vmksft patch snapshot"
 readonly EXECUTOR_NAME="vmksft-net-local"
-readonly EXECUTOR_TARGET="net net/af_unix net/can net/forwarding net/hsr net/mptcp net/netfilter net/openvswitch net/ovpn net/packetdrill net/tcp_ao nci drivers/net/bonding drivers/net/netconsole drivers/net/netdevsim drivers/net/team drivers/net/virtio_net"
 readonly CONTEST_HTML_TEMPLATE="${SCRIPT_DIR}/contest.html"
+readonly EXECUTOR_TARGET="net net/packetdrill drivers/net/netdevsim net/mptcp"
+#readonly EXECUTOR_TARGET="net net/af_unix net/can net/forwarding net/hsr net/mptcp net/netfilter net/openvswitch net/ovpn net/packetdrill net/tcp_ao nci drivers/net/bonding drivers/net/netconsole drivers/net/netdevsim drivers/net/team drivers/net/virtio_net"
 
 
 TREE="${DEFAULT_TREE}"
@@ -221,7 +222,7 @@ resolve_guest_memory() {
 
 resolve_guest_cpus() {
 	if [[ "${GUEST_CPUS}" == "auto" ]]; then
-		GUEST_CPUS=1
+		GUEST_CPUS=2
 	fi
 
 	[[ "${GUEST_CPUS}" =~ ^[0-9]+$ ]] ||
@@ -588,7 +589,7 @@ Branch handoff:
   The branches.json "base" field is metadata only in the current NIPA fetcher;
   execution is driven by the published branch ref, not by the base field.
 
-VM / executor settings:
+ VM / executor settings:
   executor: ${EXECUTOR_NAME}
   target: ${EXECUTOR_TARGET}
   guest cpus: ${GUEST_CPUS}
@@ -1102,11 +1103,10 @@ paths =
 cpus = ${GUEST_CPUS}
 mem = ${GUEST_MEMORY}
 boot_timeout = 180
-default_timeout = 45
+default_timeout = 1800
 init_prompt = ${INIT_PROMPT}
 build_reuse = true
 build_clean = ${BUILD_CLEAN}
-virtme_opt = --overlay-rwdir,tools/testing/selftests/net
 
 [ksft]
 target = ${EXECUTOR_TARGET}

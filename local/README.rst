@@ -81,10 +81,15 @@ you want the stricter CI-style clean build behavior on every tree change.
 
 On larger hosts the default resource sizing is intentionally aggressive. The
 wrapper auto-sizes guest CPU count and guest RAM, and it derives the automatic
-worker cap from host memory rather than from a fixed CPU formula. The runtime
-scheduler inside ``local_vmksft_p.py`` then tries to hold the host near 90%
-CPU utilization by admitting or withholding new work dynamically. Override the
-auto values explicitly if you want a smaller or larger footprint.
+worker cap from host memory rather than from a fixed CPU formula. The local
+executor now follows the upstream ``vmksft-p`` thread-start behavior much more
+closely: it does the same up-front selftests build, then starts worker VMs with
+the same load-wait hook and per-test ``make ... TEST_PROGS=... run_tests``
+launcher shape as the remote executor. The local dynamic scheduler still stays
+in place on top of that to manage host pressure; it governs when workers are
+admitted or recycled locally, but it does not change the individual test/build
+commands. Override the auto values explicitly if you want a smaller or larger
+footprint.
 
 After the executor starts, the wrapper serves a stable site root under
 ``local/state/vmksft-net/site/`` instead of exposing only the current run's
@@ -134,3 +139,5 @@ Notes
   are skipped.
 - Generated runtime state is ignored by git via ``local/state/`` in the repo
   root ``.gitignore``.
+- Host and userspace prerequisites are listed in
+  ``local/VMKSFT_DEPENDENCIES.rst``.

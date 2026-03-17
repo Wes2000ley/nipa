@@ -253,17 +253,143 @@ let loaded_data = null;
 let loaded_data_all = null;
 let refresh_in_flight = false;
 let refresh_timer = null;
+let pending_results_data = null;
+let pending_results_fingerprint = null;
+let applied_results_fingerprint = null;
+let loaded_filters_signature = null;
+let pointer_is_down = false;
+let refresh_resume_timer = null;
+
+function set_refresh_status(message)
+{
+    const status = document.getElementById("refresh-status");
+
+    if (status)
+	status.textContent = message;
+}
+
+function compute_results_fingerprint(data_raw)
+{
+    return JSON.stringify(data_raw);
+}
+
+function compute_filter_signature(data_raw)
+{
+    const values = {
+	"branch": new Set(),
+	"executor": new Set(),
+	"remote": new Set()
+    };
+
+    $.each(data_raw || [], function(i, v) {
+	values.branch.add(v.branch);
+	values.executor.add(v.executor);
+	values.remote.add(v.remote);
+    });
+
+    return JSON.stringify({
+	"branch": Array.from(values.branch).sort(),
+	"executor": Array.from(values.executor).sort(),
+	"remote": Array.from(values.remote).sort()
+    });
+}
+
+function has_active_text_selection()
+{
+    const selection = window.getSelection ? window.getSelection() : null;
+
+    return !!(selection && !selection.isCollapsed && selection.toString());
+}
+
+function has_active_form_focus()
+{
+    const active = document.activeElement;
+
+    if (!active || active === document.body)
+	return false;
+
+    return active.matches("input, textarea, select");
+}
+
+function page_busy_for_refresh()
+{
+    return pointer_is_down || has_active_text_selection() || has_active_form_focus();
+}
+
+function flush_pending_results()
+{
+    if (!pending_results_data || page_busy_for_refresh())
+	return;
+
+    loaded_data_all = pending_results_data;
+    applied_results_fingerprint = pending_results_fingerprint;
+    pending_results_data = null;
+    pending_results_fingerprint = null;
+
+    apply_loaded_results(false);
+    set_refresh_status("");
+}
+
+function schedule_refresh_resume(delay)
+{
+    if (refresh_resume_timer)
+	window.clearTimeout(refresh_resume_timer);
+
+    refresh_resume_timer = window.setTimeout(function() {
+	refresh_resume_timer = null;
+	flush_pending_results();
+    }, delay);
+}
+
+function install_refresh_pause_hooks()
+{
+    document.addEventListener("mousedown", function() {
+	pointer_is_down = true;
+    });
+    document.addEventListener("mouseup", function() {
+	pointer_is_down = false;
+	schedule_refresh_resume(150);
+    });
+
+    document.addEventListener("touchstart", function() {
+	pointer_is_down = true;
+    }, {passive: true});
+    document.addEventListener("touchend", function() {
+	pointer_is_down = false;
+	schedule_refresh_resume(150);
+    }, {passive: true});
+    document.addEventListener("touchcancel", function() {
+	pointer_is_down = false;
+	schedule_refresh_resume(150);
+    }, {passive: true});
+
+    document.addEventListener("selectionchange", function() {
+	schedule_refresh_resume(150);
+    });
+    document.addEventListener("focusout", function() {
+	schedule_refresh_resume(0);
+    });
+
+    window.addEventListener("blur", function() {
+	pointer_is_down = false;
+    });
+}
 
 function reload_select_filters(first_load)
 {
+        const new_signature = compute_filter_signature(loaded_data);
+    
+        if (!first_load && new_signature === loaded_filters_signature)
+    	return;
+    
     let old_values = new Object();
 
     for (const elem_id of ["branch", "executor", "remote"]) {
 	var elem = document.getElementById(elem_id);
 	old_values[elem_id] = elem.value;
+    	while (elem.options.length)
+    	    elem.remove(0);
     }
-
-    $("select option").remove();
 
     nipa_filter_add_options(loaded_data, "branch", "branch");
     nipa_filter_add_options(loaded_data, "executor", "executor");
@@ -280,6 +406,7 @@ function reload_select_filters(first_load)
 	if (elem.selectedIndex == -1)
 	    elem.selectedIndex = 0;
     }
+    loaded_filters_signature = new_signature;
 }
 
 function loaded_one()
@@ -349,17 +476,36 @@ function normalize_loaded_results(data_raw)
 
 function results_loaded(data_raw)
 {
+        const fingerprint = compute_results_fingerprint(data_raw);
+    
+        if (fingerprint === applied_results_fingerprint ||
+    	fingerprint === pending_results_fingerprint)
+    	return;
+    
     normalize_loaded_results(data_raw);
 
-    loaded_data_all = data_raw;
     if (xfr_todo > 0) {
+        	loaded_data_all = data_raw;
+        	applied_results_fingerprint = fingerprint;
 	loaded_data = select_loaded_results();
 	find_branch_urls(loaded_data);
+    	pending_results_data = null;
+    	pending_results_fingerprint = null;
+    	set_refresh_status("");
 	loaded_one();
 	return;
     }
-
-    apply_loaded_results(false);
+    if (page_busy_for_refresh()) {
+    	pending_results_data = data_raw;
+    	pending_results_fingerprint = fingerprint;
+    	set_refresh_status("New results are ready. The table will update when you finish selecting text or editing filters.");
+    	return;
+        }
+    
+        loaded_data_all = data_raw;
+        applied_results_fingerprint = fingerprint;
+        apply_loaded_results(false);
+        set_refresh_status("");
 }
 
 function fetch_results_data()
@@ -491,7 +637,7 @@ function do_it()
         e.preventDefault();
         update_url_from_filters();
     });
-
+    install_refresh_pause_hooks();
     nipa_sort_cb = results_update;
 
     $(document).ready(function() {

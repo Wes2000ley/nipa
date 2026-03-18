@@ -80,9 +80,7 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
         ipvsadm \
         jq \
         kmod \
-        lld \
         linuxptp \
-        llvm \
         make \
         net-tools \
         netperf \
@@ -102,12 +100,10 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
         psmisc \
         python3 \
         python3-pip \
-        python3-psutil \
-        python3-pyyaml \
-        python3-requests \
         python-unversioned-command \
         qemu-img \
-        qemu-kvm \
+        qemu-system-x86-core \
+        qemu-ui-curses \
         rsync \
         ShellCheck \
         socat \
@@ -122,6 +118,7 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
         which \
         xz \
         yamllint \
+    && ln -sf /usr/libexec/virtiofsd /usr/bin/virtiofsd \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 

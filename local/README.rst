@@ -90,6 +90,12 @@ the broader net selftest toolchain that the current tree actually checks for:
 helpers. ``sendip`` is not packaged in Fedora 44, but the relevant selftest
 already has a ``socat`` fallback and the image includes that path.
 
+The current image trim keeps the same test coverage and convenience tools, but
+it avoids some duplicate or broader-than-needed packages. The QEMU layer keeps
+the x86 system emulator plus the curses UI instead of the larger desktop UI
+stack, and the Python modules used by the local scripts come from the dedicated
+virtualenv rather than from duplicate Fedora RPMs.
+
 From the repo root, change into ``local/``, copy ``.env.example`` to ``.env``,
 edit the paths you want, then build and run:
 

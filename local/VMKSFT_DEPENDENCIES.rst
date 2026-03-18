@@ -114,14 +114,54 @@ often enough that they should be considered part of the local baseline:
 - ``python3-yaml``
 - ``netsniff-ng``
 - ``packetdrill``
+- ``iptables``
+- ``iptables-utils``
+  Provides ``nfbpf_compile`` used by packet filter setup helpers.
+- ``nftables``
+- ``conntrack``
+- ``tcpdump``
+- ``iputils-arping``
+- ``traceroute``
+- ``bpftool``
+- ``perf``
+- ``ipvsadm``
+- ``openvswitch``
+- ``psmisc``
+  Provides helpers like ``pkill`` used by some networking tests.
+- ``kmod``
+  Provides ``modprobe`` / ``lsmod`` for tests that check module state.
+- ``wireshark-cli``
+  Provides ``tshark`` for drop-monitor decoding.
+- ``dropwatch``
+  Provides ``dwdump`` for drop-monitor decoding.
+- ``ndisc6``
+- ``ipv6toolkit``
+  Provides ``ra6`` for several IPv6 route advertisement tests.
+- ``linuxptp``
+  Provides ``ptp4l``, ``phc2sys``, and ``phc_ctl`` used by TSN tests.
+- ``teamd``
+- ``systemd-udev``
+  Provides ``udevadm``.
+- ``python-unversioned-command``
+  Useful for tests that still invoke ``python`` rather than ``python3``.
 
 Recommended install:
 
 .. code-block:: bash
 
   sudo apt install \
-    iproute2 ethtool jq iperf3 iputils-ping netcat-openbsd socat \
-    python3-yaml netsniff-ng packetdrill
+    iproute2 ethtool jq iperf3 iputils-ping iputils-arping netcat-openbsd \
+    socat python3-yaml netsniff-ng packetdrill iptables nftables \
+    conntrack tcpdump traceroute bpftool linux-perf ipvsadm openvswitch-switch \
+    psmisc kmod tshark ndisc6 teamd
+
+Some remaining helpers are packaged differently across distros:
+
+- ``ra6`` comes from ``ipv6toolkit`` on Fedora.
+- ``nfbpf_compile`` comes from ``iptables-utils`` on Fedora.
+- ``dwdump`` comes from ``dropwatch`` on Fedora.
+- the container image installs these explicitly so the Compose workflow does
+  not depend on the host distro naming.
 
 Notes:
 
@@ -130,6 +170,17 @@ Notes:
   parsing helpers.
 - ``packetdrill`` is required by the default ``net/packetdrill`` target in the
   local vmksft harness.
+- ``iptables``, ``nftables``, and ``conntrack`` are used throughout
+  ``netfilter/``.
+- ``tcpdump`` is directly checked by multiple tests including
+  ``broadcast_ether_dst.sh``, ``arp_ndisc_untracked_subnets.sh``, and
+  ``drop_monitor_tests.sh``.
+- ``bpftool`` is required by ``bpf_offload.py``.
+- ``perf`` is checked by ``fib_tests.sh`` and ``openvswitch/openvswitch.sh``.
+- ``openvswitch`` tools are used by ``openvswitch/openvswitch.sh`` and several
+  PMTU test paths.
+- ``ndisc6`` and ``ra6`` are required by IPv6 bridge and FIB tests.
+- ``tshark`` and ``dwdump`` are required by ``drop_monitor_tests.sh``.
 - ``iproute2`` is the largest single userspace dependency for this target set.
 
 
@@ -201,9 +252,15 @@ If you want one baseline install command for the local harness, start here:
 
   sudo apt install \
     bc bison ethtool flex gcc git iperf3 iproute2 iputils-ping jq \
-    libcap-dev libelf-dev libnuma-dev libssl-dev make netcat-openbsd \
-    netsniff-ng packetdrill pahole python3 python3-psutil python3-requests \
-    python3-yaml qemu-system-x86 qemu-utils rsync socat virtiofsd
+    iputils-arping iptables nftables conntrack tcpdump traceroute bpftool \
+    linux-perf ipvsadm openvswitch-switch psmisc kmod libcap-dev libelf-dev \
+    libnuma-dev libssl-dev make netcat-openbsd ndisc6 netsniff-ng \
+    packetdrill pahole python3 python3-psutil python3-requests python3-yaml \
+    qemu-system-x86 qemu-utils rsync socat teamd tshark virtiofsd
+
+Then add any distro-specific extras you care about, such as ``ra6``,
+``nfbpf_compile``, and ``dwdump``, using the package names from your host
+distribution.
 
 Then install ``virtme-ng``:
 

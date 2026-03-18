@@ -50,15 +50,20 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
         bash \
         bc \
         bison \
+        bpftool \
+        bridge-utils \
         ca-certificates \
         clang \
+        conntrack-tools \
         coreutils \
         cpio \
         curl-minimal \
         diffutils \
+        dropwatch \
         dwarves \
         elfutils-libelf-devel \
         ethtool \
+        ebtables-legacy \
         findutils \
         flex \
         gawk \
@@ -69,32 +74,51 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
         gzip \
         iperf3 \
         iputils \
+        iptables \
+        iptables-utils \
+        ipv6toolkit \
+        ipvsadm \
         jq \
+        kmod \
         lld \
+        linuxptp \
         llvm \
         make \
+        net-tools \
+        netperf \
+        ndisc6 \
         nmap-ncat \
         netsniff-ng \
+        nftables \
         numactl-devel \
+        openvswitch \
         openssl-devel \
         patch \
         packetdrill \
         packetdrill-data \
         perl \
+        perf \
         procps-ng \
+        psmisc \
         python3 \
         python3-pip \
         python3-psutil \
         python3-pyyaml \
         python3-requests \
+        python-unversioned-command \
         qemu-img \
         qemu-kvm \
         rsync \
         ShellCheck \
         socat \
+        systemd-udev \
         tar \
+        tcpdump \
+        teamd \
+        traceroute \
         util-linux \
         virtiofsd \
+        wireshark-cli \
         which \
         xz \
         yamllint \

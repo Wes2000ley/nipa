@@ -82,9 +82,13 @@ must support the same virtualization features that the native wrapper needs.
 The image intentionally matches the newer local userspace stack more closely:
 it pins ``virtme-ng 1.40``, ``patatt 0.7.0``, ``pylint 4.0.5``, and overlays
 ``iproute2 6.19.0`` on top of the Fedora base packages. It also installs
-``packetdrill`` explicitly, because the default vmksft target set includes
-``net/packetdrill`` and that binary is not covered by the basic networking
-package list alone.
+the broader net selftest toolchain that the current tree actually checks for:
+``packetdrill``, ``iptables``/``ip6tables``, ``nft``, ``conntrack``,
+``tcpdump``, ``arping``, ``bpftool``, ``perf``, ``openvswitch``,
+``ipvsadm``, ``mausezahn``, ``ndisc6``, ``ra6``, ``nfbpf_compile``,
+``tshark``, ``dwdump``, ``teamd``, ``ptp4l``, ``phc2sys``, and related
+helpers. ``sendip`` is not packaged in Fedora 44, but the relevant selftest
+already has a ``socat`` fallback and the image includes that path.
 
 From the repo root, change into ``local/``, copy ``.env.example`` to ``.env``,
 edit the paths you want, then build and run:

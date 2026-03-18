@@ -40,6 +40,8 @@ The ``local/`` tree is split by subsystem:
 - ``tests/`` for the local unit tests
 - ``docs/`` for supporting local documentation such as dependency notes
 - ``systemd/`` for sample unit files
+- ``vmksft`` as the short user-facing wrapper that auto-detects Docker vs
+  native service mode
 
 Usage
 -----
@@ -123,6 +125,19 @@ edit the paths you want, then build and start the long-lived service:
   docker compose up -d vmksft-service
 
 Submit work through the queued service:
+
+.. code-block:: bash
+
+  ./vmksft committed
+  ./vmksft dirty
+  ./vmksft patches
+  ./vmksft list
+
+The wrapper is the recommended user interface. It checks whether the running
+backend is the Docker Compose service or the native ``systemd`` service and
+then dispatches the queue command to the right place automatically.
+
+The longer direct Docker form still works:
 
 .. code-block:: bash
 
@@ -224,10 +239,12 @@ Two sample unit files live under ``local/systemd/``:
 Both samples expect you to replace ``#NIPA#`` with the absolute repo path. The
 native sample also expects ``#USER#`` to be replaced with the account that owns
 the repo and the state directory. Both use ``local/.env`` as the shared config
-source. Native submissions use the same queue CLI directly:
+source. Native submissions can use either the same short wrapper or the direct
+queue CLI:
 
 .. code-block:: bash
 
+  ~/nipa/local/vmksft dirty
   python3 ~/nipa/local/bin/vmksft_queue.py submit --mode dirty
 
 Notes

@@ -1,0 +1,212 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+
+set -euo pipefail
+
+LOCAL_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly LOCAL_DIR
+readonly COMPOSE_FILE="${LOCAL_DIR}/docker-compose.yml"
+readonly COMPOSE_SERVICE="vmksft-service"
+readonly HOST_QUEUE="${LOCAL_DIR}/bin/vmksft_queue.py"
+readonly CONTAINER_QUEUE="/workspace/nipa/local/bin/vmksft_queue.py"
+
+usage() {
+	cat <<'EOF'
+Usage:
+  vmksft committed [queue-options...]
+  vmksft dirty [queue-options...]
+  vmksft patches [queue-options...]
+  vmksft submit [queue-options...]
+  vmksft list
+  vmksft show JOB_ID
+  vmksft cancel JOB_ID
+  vmksft backend
+
+Examples:
+  ./vmksft committed
+  ./vmksft dirty --threads 4
+  ./vmksft patches --fresh-cache
+  ./vmksft list
+
+Behavior:
+  - If the Docker Compose vmksft service is running, commands are executed there.
+  - Otherwise, if the native nipa-vmksft-native systemd service is active,
+    commands run directly on the host.
+  - Set VMKSFT_BACKEND=docker or VMKSFT_BACKEND=native to override detection.
+EOF
+}
+
+need_cmd() {
+	command -v "$1" >/dev/null 2>&1 || {
+		printf 'vmksft: missing dependency: %s\n' "$1" >&2
+		exit 1
+	}
+}
+
+compose_args() {
+	if [[ -f "${LOCAL_DIR}/.env" ]]; then
+		printf '%s\0' --env-file "${LOCAL_DIR}/.env"
+	fi
+	printf '%s\0' -f "${COMPOSE_FILE}"
+}
+
+run_compose() {
+	local -a args=()
+	local -a cmd=(docker compose)
+	local stderr_file=""
+	local rc=0
+	local quoted_local_dir=""
+	local quoted_cmd=""
+	while IFS= read -r -d '' item; do
+		args+=("${item}")
+	done < <(compose_args)
+
+	cmd+=("${args[@]}" "$@")
+	stderr_file="$(mktemp)"
+	if (
+		cd "${LOCAL_DIR}"
+		"${cmd[@]}"
+	) 2>"${stderr_file}"; then
+		rm -f "${stderr_file}"
+		return 0
+	fi
+	rc=$?
+
+	if grep -q "permission denied while trying to connect to the docker API" "${stderr_file}" &&
+		command -v sg >/dev/null 2>&1 &&
+		getent group docker >/dev/null 2>&1; then
+		printf -v quoted_local_dir '%q' "${LOCAL_DIR}"
+		printf -v quoted_cmd '%q ' "${cmd[@]}"
+		rm -f "${stderr_file}"
+		sg docker -c "cd ${quoted_local_dir} && ${quoted_cmd% }"
+		return $?
+	fi
+
+	cat "${stderr_file}" >&2
+	rm -f "${stderr_file}"
+	return "${rc}"
+}
+
+compose_service_running() {
+	command -v docker >/dev/null 2>&1 || return 1
+	[[ -f "${COMPOSE_FILE}" ]] || return 1
+	run_compose ps --status running --services 2>/dev/null | grep -qx "${COMPOSE_SERVICE}"
+}
+
+native_service_running() {
+	command -v systemctl >/dev/null 2>&1 || return 1
+	systemctl is-active --quiet nipa-vmksft-native
+}
+
+detect_backend() {
+	case "${VMKSFT_BACKEND:-auto}" in
+	docker)
+		printf 'docker\n'
+		return 0
+		;;
+	native)
+		printf 'native\n'
+		return 0
+		;;
+	auto)
+		;;
+	*)
+		printf 'vmksft: unsupported VMKSFT_BACKEND=%s\n' "${VMKSFT_BACKEND}" >&2
+		exit 1
+		;;
+	esac
+
+	if compose_service_running; then
+		printf 'docker\n'
+		return 0
+	fi
+	if native_service_running; then
+		printf 'native\n'
+		return 0
+	fi
+
+	return 1
+}
+
+run_queue_native() {
+	need_cmd python3
+	exec python3 "${HOST_QUEUE}" "$@"
+}
+
+run_queue_docker() {
+	need_cmd docker
+	run_compose exec -T "${COMPOSE_SERVICE}" python3 "${CONTAINER_QUEUE}" "$@"
+}
+
+queue_backend_exec() {
+	local backend="$1"
+	shift
+
+	case "${backend}" in
+	docker)
+		run_queue_docker "$@"
+		;;
+	native)
+		run_queue_native "$@"
+		;;
+	*)
+		printf 'vmksft: unsupported backend: %s\n' "${backend}" >&2
+		exit 1
+		;;
+	esac
+}
+
+main() {
+	local command="${1:-}"
+	local backend
+
+	case "${command}" in
+	""|-h|--help|help)
+		usage
+		exit 0
+		;;
+	backend)
+		if backend="$(detect_backend)"; then
+			printf '%s\n' "${backend}"
+			exit 0
+		fi
+		printf 'vmksft: no running backend found; start docker compose or nipa-vmksft-native\n' >&2
+		exit 1
+		;;
+	committed|dirty|patches)
+		shift
+		if ! backend="$(detect_backend)"; then
+			printf 'vmksft: no running backend found; start docker compose or nipa-vmksft-native\n' >&2
+			exit 1
+		fi
+		queue_backend_exec "${backend}" submit --mode "${command}" "$@"
+		;;
+	submit|list)
+		shift
+		if ! backend="$(detect_backend)"; then
+			printf 'vmksft: no running backend found; start docker compose or nipa-vmksft-native\n' >&2
+			exit 1
+		fi
+		queue_backend_exec "${backend}" "${command}" "$@"
+		;;
+	show|cancel)
+		shift
+		[[ $# -ge 1 ]] || {
+			printf 'vmksft: %s requires a job id\n' "${command}" >&2
+			exit 1
+		}
+		if ! backend="$(detect_backend)"; then
+			printf 'vmksft: no running backend found; start docker compose or nipa-vmksft-native\n' >&2
+			exit 1
+		fi
+		queue_backend_exec "${backend}" "${command}" "$@"
+		;;
+	*)
+		printf 'vmksft: unknown command: %s\n' "${command}" >&2
+		usage >&2
+		exit 1
+		;;
+	esac
+}
+
+main "$@"

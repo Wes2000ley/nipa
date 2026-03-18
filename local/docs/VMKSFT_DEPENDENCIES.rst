@@ -169,7 +169,9 @@ Notes:
 - ``jq`` is used by multiple ``drivers/net/netdevsim`` tests and other JSON
   parsing helpers.
 - ``packetdrill`` is required by the default ``net/packetdrill`` target in the
-  local vmksft harness.
+  local vmksft harness. The container image builds ``packetdrill`` from the
+  upstream Google repository rather than using the distro RPM so newer AccECN
+  grammar support is available.
 - ``iptables``, ``nftables``, and ``conntrack`` are used throughout
   ``netfilter/``.
 - ``tcpdump`` is directly checked by multiple tests including

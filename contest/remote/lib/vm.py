@@ -231,7 +231,14 @@ class VM:
         self._set_env()
 
     def stop(self):
-        self.cmd("exit")
+        if self.p is None:
+            return
+
+        if self.p.poll() is None:
+            try:
+                self.cmd("exit")
+            except BrokenPipeError:
+                pass
         try:
             stdout, stderr = self.p.communicate(timeout=3)
         except subprocess.TimeoutExpired:
@@ -467,4 +474,3 @@ def new_vm(results_path, vm_id, thr=None, vm=None, config=None, cwd=None):
             print(f"WARN{vm.print_pfx} VM did not start, retrying {i}/4")
             vm.dump_log(results_path + f'/vm-crashed-{thr_pfx}{vm_id}-{i}')
             vm.stop()
-

@@ -36,6 +36,23 @@ def decode_and_filter(buf):
 upstream_vm.decode_and_filter = decode_and_filter
 
 
+RETCODE_MARKER = "__NIPA_PREV_RC__"
+
+
+def parse_bash_prev_retcode_output(stdout):
+    match = re.search(rf"{RETCODE_MARKER}(\d+)", stdout)
+    if match:
+        return int(match.group(1))
+
+    # Fall back to the old plain-line parsing for older prompt behavior.
+    for line in reversed(stdout.splitlines()):
+        line = re.sub(r'\[\?2004[hl]', '', line).strip()
+        if re.fullmatch(r'\d+', line):
+            return int(line)
+
+    raise ValueError(f"unable to parse shell return code from stdout: {stdout!r}")
+
+
 class LocalVM(VM):
     def _build_state_path(self):
         return os.path.join(self.tree_path, '.nipa-cache', 'vng-build.json')
@@ -129,15 +146,9 @@ class LocalVM(VM):
         return True
 
     def bash_prev_retcode(self):
-        self.cmd("echo $?")
+        self.cmd(f"printf '{RETCODE_MARKER}%s\\n' $?")
         stdout, stderr = self.drain_to_prompt()
-        # Some shells emit bracketed-paste toggles around the echoed status.
-        # Accept the last bare integer line instead of assuming a fixed offset.
-        for line in reversed(stdout.splitlines()):
-            line = re.sub(r'\[\?2004[hl]', '', line).strip()
-            if re.fullmatch(r'\d+', line):
-                return int(line)
-        raise ValueError(f"unable to parse shell return code from stdout: {stdout!r}")
+        return parse_bash_prev_retcode_output(stdout)
 
 
 def new_local_vm(results_path, vm_id, thr=None, vm=None, config=None, cwd=None):

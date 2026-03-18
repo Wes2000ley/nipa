@@ -1216,6 +1216,9 @@ mem = ${GUEST_MEMORY}
 boot_timeout = 180
 default_timeout = 1800
 init_prompt = ${INIT_PROMPT}
+# Give the guest a writable copy-on-write view of the worker tree. This lets
+# selftests build helpers in-place without mutating the host-side cache.
+virtme_opt = --overlay-rwdir,${WORKER_TREE}
 build_reuse = true
 build_clean = ${BUILD_CLEAN}
 

@@ -33,9 +33,40 @@ RUN curl -fsSLO "https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-${
         BINDIR=/usr/bin
 
 
+FROM fedora:44 AS packetdrill-build
+
+ARG PACKETDRILL_REF=master
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
+        ca-certificates \
+        git \
+        gcc \
+        make \
+        bison \
+        flex \
+        glibc-static \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+WORKDIR /tmp
+
+RUN git init packetdrill \
+    && cd packetdrill \
+    && git remote add origin https://github.com/google/packetdrill.git \
+    && git fetch --depth=1 origin "${PACKETDRILL_REF}" \
+    && git checkout --detach FETCH_HEAD \
+    && cd gtests/net/packetdrill \
+    && ./configure \
+    && make -j"$(nproc)" packetdrill \
+    && install -D -m 0755 packetdrill /tmp/packetdrill-root/usr/local/bin/packetdrill
+
+
 FROM fedora:44
 
 ARG IPROUTE2_VERSION=6.19.0
+ARG PACKETDRILL_REF=master
 ARG VIRTME_NG_VERSION=1.40
 ARG PATATT_VERSION=0.7.0
 ARG PYLINT_VERSION=4.0.5
@@ -92,8 +123,6 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
         openvswitch \
         openssl-devel \
         patch \
-        packetdrill \
-        packetdrill-data \
         perl \
         perf \
         procps-ng \
@@ -125,6 +154,7 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
 COPY --from=iproute-build /tmp/iproute2-root/usr/bin/ /usr/bin/
 COPY --from=iproute-build /tmp/iproute2-root/usr/lib/ /usr/lib/
 COPY --from=iproute-build /tmp/iproute2-root/usr/share/ /usr/share/
+COPY --from=packetdrill-build /tmp/packetdrill-root/usr/local/bin/ /usr/local/bin/
 
 RUN python3 -m venv "${VIRTUAL_ENV}" \
     && "${VIRTUAL_ENV}/bin/pip" install --no-cache-dir --upgrade pip setuptools wheel \

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from pathlib import Path
 
 
@@ -288,13 +289,18 @@ def _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
 
 def vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
               live_status_path=None, live_lock=None, live_state=None,
-              scheduler=None):
+              scheduler=None, failure_queue=None):
     try:
         _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
                    live_status_path=live_status_path, live_lock=live_lock,
                    live_state=live_state, scheduler=scheduler)
     except Exception:
         print(f"ERROR: thr-{thr_id} has crashed")
+        if failure_queue is not None:
+            failure_queue.put({
+                "thread": thr_id,
+                "traceback": traceback.format_exc(),
+            })
         raise
 
 
@@ -408,6 +414,7 @@ def test(binfo, rinfo, cbarg):
 
     in_queue = queue.Queue()
     out_queue = queue.Queue()
+    failure_queue = queue.Queue()
     threads = []
 
     i = 0
@@ -469,7 +476,8 @@ def test(binfo, rinfo, cbarg):
                                             args=[config, results_path, i, hard_stop,
                                                   in_queue, out_queue,
                                                   live_status_path, live_lock,
-                                                  live_status, scheduler]))
+                                                  live_status, scheduler,
+                                                  failure_queue]))
             threads[i].start()
 
         for i in range(thr_cnt):
@@ -492,15 +500,37 @@ def test(binfo, rinfo, cbarg):
             if key in r:
                 outcome[key] = r[key]
         cases.append(outcome)
-    if not in_queue.empty():
+    failures = []
+    while not failure_queue.empty():
+        failures.append(failure_queue.get())
+
+    if failures:
+        print(f"ERROR: {len(failures)} worker thread(s) crashed")
+        for failure in failures:
+            print(failure["traceback"], end="")
+
+    queue_not_empty = not in_queue.empty()
+    if queue_not_empty:
         print("ERROR: in queue is not empty")
 
     if live_status_path and live_status:
         with live_lock:
             live_status['scheduler'] = scheduler.snapshot()
             live_status['finished'] = True
-            live_status['status'] = 'complete'
+            if failures or queue_not_empty:
+                live_status['status'] = 'failed'
+                live_status['failure'] = {
+                    'worker_failures': len(failures),
+                    'queue_not_empty': queue_not_empty,
+                }
+            else:
+                live_status['status'] = 'complete'
             _live_status_touch(live_status_path, live_status)
+
+    if failures:
+        raise RuntimeError(f"{len(failures)} worker thread(s) crashed during execution")
+    if queue_not_empty:
+        raise RuntimeError("worker queue was not drained before executor exit")
 
     print("Done at", datetime.datetime.now())
 

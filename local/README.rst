@@ -99,8 +99,11 @@ must support the same virtualization features that the native wrapper needs.
 
 The image intentionally matches the newer local userspace stack more closely:
 it pins ``virtme-ng 1.40``, ``patatt 0.7.0``, ``pylint 4.0.5``, and overlays
-``iproute2 6.19.0`` on top of the Fedora base packages. It also installs
-the broader net selftest toolchain that the current tree actually checks for:
+``iproute2 6.19.0`` on top of the Fedora base packages. It also builds
+``packetdrill`` from the upstream Google repository at the current default
+branch head during image builds so the image carries the newer AccECN parser
+support instead of Fedora's older RPM, and it installs the broader net
+selftest toolchain that the current tree actually checks for:
 ``packetdrill``, ``iptables``/``ip6tables``, ``nft``, ``conntrack``,
 ``tcpdump``, ``arping``, ``bpftool``, ``perf``, ``openvswitch``,
 ``ipvsadm``, ``mausezahn``, ``ndisc6``, ``ra6``, ``nfbpf_compile``,

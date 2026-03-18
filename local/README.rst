@@ -17,7 +17,8 @@ which:
 - serves that manifest and the resulting JSON artifacts over HTTP on port
   ``8888`` by default
 - keeps the HTTP server alive after completion so you can continue browsing the
-  generated pages until you stop it with ``Ctrl-C`` or ``Ctrl-Z``
+  generated pages until you stop it with ``Ctrl-C`` or ``Ctrl-Z``; pass
+  ``--exit-when-done`` to skip that manual wait
 - runs ``local/local_vmksft_p.py`` with a generated config and the cached
   worker tree
 
@@ -65,7 +66,47 @@ Common knobs:
   differs from the default on this host
 - ``--http-port N`` changes the listening port from the default ``8888``
 - ``--public-host HOST`` changes the hostname or IP published in result URLs
+- ``--exit-when-done`` makes the wrapper exit after the run instead of keeping
+  the built-in HTTP server alive for manual browsing
 - ``--fresh-cache`` drops the cached remote and worker tree before the run
+
+Containerized workflow
+----------------------
+
+``local/Dockerfile`` and ``local/docker-compose.yml`` package the userspace side
+of the vmksft harness in a Fedora 44 image. The container provides the QEMU,
+``virtme-ng``, Python, and tooling stack; it does **not** replace the host
+kernel. KVM still comes from the host kernel and device access, so the host
+must support the same virtualization features that the native wrapper needs.
+
+The image intentionally matches the newer local userspace stack more closely:
+it pins ``virtme-ng 1.40``, ``patatt 0.7.0``, ``pylint 4.0.5``, and overlays
+``iproute2 6.19.0`` on top of the Fedora base packages. It also installs
+``packetdrill`` explicitly, because the default vmksft target set includes
+``net/packetdrill`` and that binary is not covered by the basic networking
+package list alone.
+
+From the repo root, change into ``local/``, copy ``.env.example`` to ``.env``,
+edit the paths you want, then build and run:
+
+.. code-block:: bash
+
+  cd ~/nipa/local
+  cp .env.example .env
+  docker compose build
+  docker compose up -d vmksft-web
+  docker compose run --rm vmksft-runner
+
+The runner is a one-shot container. It uses ``--exit-when-done`` so it exits
+with the vmksft result code when the run finishes. The separate ``vmksft-web``
+service keeps serving ``local/state/vmksft-net/site`` on
+``http://localhost:8888/`` by default.
+
+By default, Compose bind-mounts ``local/state/`` exactly like the native local
+workflow. If you want the artifacts somewhere else on the host, set
+``NIPA_STATE_DIR`` in ``local/.env`` to another host path; inside the container
+it is still exposed as ``/workspace/nipa/local/state`` so the NIPA paths do not
+change.
 
 Runtime state is kept under ``local/state/vmksft-net/`` and each run gets its
 own timestamped subdirectory. The ``latest`` symlink is updated to the most
@@ -131,6 +172,9 @@ Notes
 - The HTTP server listens on all interfaces so other machines can browse the
   generated results. The executor still fetches the manifest locally via
   ``127.0.0.1`` to avoid depending on external name resolution.
+- The Compose runner still starts this built-in HTTP server during execution so
+  the fetcher can consume ``branches.json`` locally. The separate web service
+  is for persistent browsing after the runner exits.
 - The worker tree cache is there to avoid unnecessary rebuilds on reruns. Use
   ``--fresh-cache`` if the cache gets wedged or you want to force a fully clean
   local reproduction.

@@ -48,6 +48,7 @@ PUBLIC_HOST="${DEFAULT_PUBLIC_HOST}"
 PATCH_DIR=""
 BUILD_CLEAN="${DEFAULT_BUILD_CLEAN}"
 EXPLAIN_ONLY=0
+EXIT_WHEN_DONE=0
 
 RUN_ID=""
 RUN_DIR=""
@@ -112,6 +113,8 @@ Options:
   --init-prompt STR     Initial guest prompt. Default: ${DEFAULT_INIT_PROMPT}
   --http-port N         HTTP port for manifest/results. Default: ${DEFAULT_HTTP_PORT}
   --public-host HOST    Hostname or IP published in result URLs. Default: ${DEFAULT_PUBLIC_HOST}
+  --exit-when-done      Exit after the run completes instead of keeping the
+                        built-in HTTP server alive for manual browsing
   --fresh-cache         Drop the cached remote/worker tree before this run
   -h, --help            Show this help text
 EOF
@@ -829,6 +832,11 @@ start_site_refresh_loop() {
 }
 
 wait_for_manual_shutdown() {
+	if (( EXIT_WHEN_DONE == 1 )); then
+		log "exit-when-done requested; stopping the built-in HTTP server"
+		return 0
+	fi
+
 	log "results are still being served at http://${PUBLIC_HOST}:${HTTP_PORT}/"
 	log "press Ctrl-C or Ctrl-Z when you are done inspecting the web view"
 
@@ -902,6 +910,10 @@ while [[ $# -gt 0 ]]; do
 		require_value "$@"
 		PUBLIC_HOST="$2"
 		shift 2
+		;;
+	--exit-when-done)
+		EXIT_WHEN_DONE=1
+		shift
 		;;
 	--fresh-cache)
 		FRESH_CACHE=1

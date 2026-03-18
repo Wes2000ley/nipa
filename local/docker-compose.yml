@@ -1,0 +1,59 @@
+services:
+  vmksft-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nipa-vmksft:fedora44
+    init: true
+    privileged: true
+    working_dir: /workspace/nipa/local
+    volumes:
+      - ..:/workspace/nipa:ro
+      - ${NIPA_STATE_DIR:-./state}:/workspace/nipa/local/state
+      - ${NIPA_KERNEL_TREE:-/tmp/nipa-missing-kernel-tree}:/workspace/kernel:ro
+      - ${NIPA_PATCH_DIR:-./patches}:/workspace/patches:ro
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        args=(
+          /workspace/nipa/local/run-vmksft-net.sh
+          --tree /workspace/kernel
+          --state-dir /workspace/nipa/local/state/vmksft-net
+          --mode "$${VMKSFT_MODE:-committed}"
+          --build-clean "$${VMKSFT_BUILD_CLEAN:-config-change}"
+          --threads "$${VMKSFT_THREADS:-auto}"
+          --cpus "$${VMKSFT_CPUS:-auto}"
+          --memory "$${VMKSFT_MEMORY:-auto}"
+          --init-prompt "$${VMKSFT_INIT_PROMPT:-#}"
+          --http-port "$${NIPA_WEB_PORT:-8888}"
+          --public-host "$${NIPA_PUBLIC_HOST:-localhost}"
+          --exit-when-done
+        )
+        if [[ "$${VMKSFT_MODE:-committed}" == "patches" ]]; then
+          args+=(--patch-dir /workspace/patches)
+        fi
+        exec "$${args[@]}"
+
+  vmksft-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nipa-vmksft:fedora44
+    init: true
+    restart: unless-stopped
+    working_dir: /workspace/nipa/local
+    ports:
+      - "${NIPA_WEB_PORT:-8888}:${NIPA_WEB_PORT:-8888}"
+    volumes:
+      - ..:/workspace/nipa:ro
+      - ${NIPA_STATE_DIR:-./state}:/workspace/nipa/local/state:ro
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        exec python3 /workspace/nipa/local/serve-vmksft-http.py \
+          --bind 0.0.0.0 \
+          --port "$${NIPA_WEB_PORT:-8888}" \
+          --directory /workspace/nipa/local/state/vmksft-net/site

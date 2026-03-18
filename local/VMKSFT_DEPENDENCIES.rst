@@ -113,6 +113,7 @@ often enough that they should be considered part of the local baseline:
 - ``socat``
 - ``python3-yaml``
 - ``netsniff-ng``
+- ``packetdrill``
 
 Recommended install:
 
@@ -120,13 +121,15 @@ Recommended install:
 
   sudo apt install \
     iproute2 ethtool jq iperf3 iputils-ping netcat-openbsd socat \
-    python3-yaml netsniff-ng
+    python3-yaml netsniff-ng packetdrill
 
 Notes:
 
 - ``iperf3`` was directly required by ``udpgro-fwd.sh``.
 - ``jq`` is used by multiple ``drivers/net/netdevsim`` tests and other JSON
   parsing helpers.
+- ``packetdrill`` is required by the default ``net/packetdrill`` target in the
+  local vmksft harness.
 - ``iproute2`` is the largest single userspace dependency for this target set.
 
 
@@ -199,7 +202,7 @@ If you want one baseline install command for the local harness, start here:
   sudo apt install \
     bc bison ethtool flex gcc git iperf3 iproute2 iputils-ping jq \
     libcap-dev libelf-dev libnuma-dev libssl-dev make netcat-openbsd \
-    netsniff-ng pahole python3 python3-psutil python3-requests \
+    netsniff-ng packetdrill pahole python3 python3-psutil python3-requests \
     python3-yaml qemu-system-x86 qemu-utils rsync socat virtiofsd
 
 Then install ``virtme-ng``:

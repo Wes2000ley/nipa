@@ -2,11 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0
 
 import argparse
-import functools
-import mimetypes
-import os
 
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from vmksft_http import create_http_server
 
 
 def parse_args():
@@ -21,41 +18,9 @@ def parse_args():
                         help="Document root to serve")
     return parser.parse_args()
 
-
-class VmksftHTTPRequestHandler(SimpleHTTPRequestHandler):
-    def guess_type(self, path):
-        ctype = super().guess_type(path)
-        norm = path.replace(os.sep, "/")
-        base = os.path.basename(path)
-        _, ext = os.path.splitext(base)
-
-        if "/query/" in norm:
-            return "application/json; charset=utf-8"
-        if not ext:
-            return "text/plain; charset=utf-8"
-        if ext == ".json":
-            return "application/json; charset=utf-8"
-        if ext in [".html", ".htm"]:
-            return "text/html; charset=utf-8"
-        if ext in [".log", ".txt", ".config"]:
-            return "text/plain; charset=utf-8"
-        return ctype
-
-    def end_headers(self):
-        self.send_header("Cache-Control", "no-store")
-        super().end_headers()
-
-
 def main():
     args = parse_args()
-    handler = functools.partial(
-        VmksftHTTPRequestHandler,
-        directory=args.directory,
-    )
-    mimetypes.add_type("text/plain", ".log")
-    mimetypes.add_type("text/plain", ".config")
-
-    with ThreadingHTTPServer((args.bind, args.port), handler) as httpd:
+    with create_http_server(args.bind, args.port, args.directory) as httpd:
         httpd.serve_forever()
 
 

@@ -16,6 +16,7 @@ readonly DEFAULT_MEMORY="auto"
 readonly DEFAULT_INIT_PROMPT="#"
 readonly DEFAULT_HTTP_PORT=8888
 readonly DEFAULT_PUBLIC_HOST="192.168.50.103"
+readonly DEFAULT_INTERNAL_HTTP_BIND="0.0.0.0"
 readonly DEFAULT_BRANCH_NAME="local-vmksft-net"
 readonly DEFAULT_MODE="committed"
 readonly DEFAULT_RESERVED_MEM_GB=8
@@ -44,11 +45,14 @@ GUEST_CPUS="${DEFAULT_CPUS}"
 GUEST_MEMORY="${DEFAULT_MEMORY}"
 INIT_PROMPT="${DEFAULT_INIT_PROMPT}"
 HTTP_PORT="${DEFAULT_HTTP_PORT}"
+INTERNAL_HTTP_BIND="${DEFAULT_INTERNAL_HTTP_BIND}"
+INTERNAL_HTTP_PORT=""
 PUBLIC_HOST="${DEFAULT_PUBLIC_HOST}"
 PATCH_DIR=""
 BUILD_CLEAN="${DEFAULT_BUILD_CLEAN}"
 EXPLAIN_ONLY=0
 EXIT_WHEN_DONE=0
+JOB_META_PATH=""
 
 RUN_ID=""
 RUN_DIR=""
@@ -79,6 +83,11 @@ DIRTY_PATCH=""
 PATCH_FILES=()
 PATCH_COUNT=0
 SOURCE_BRANCH=""
+SOURCE_TREE_DISPLAY=""
+TREE_HEAD_DISPLAY=""
+TREE_BASE_DISPLAY=""
+MODE_LABEL=""
+SERVICE_JOB_ID=""
 EXECUTOR_INDEX=""
 SUMMARY_JSON=""
 MANIFEST_PATH=""
@@ -111,8 +120,15 @@ Options:
   --cpus N|auto         Guest CPU count. Default: ${DEFAULT_CPUS}
   --memory SIZE|auto    Guest memory. Default: ${DEFAULT_MEMORY}
   --init-prompt STR     Initial guest prompt. Default: ${DEFAULT_INIT_PROMPT}
-  --http-port N         HTTP port for manifest/results. Default: ${DEFAULT_HTTP_PORT}
+  --http-port N         Public HTTP port used in generated result URLs. Default: ${DEFAULT_HTTP_PORT}
+  --internal-http-bind HOST
+                        Bind address for the runner's private manifest server.
+                        Default: ${DEFAULT_INTERNAL_HTTP_BIND}
+  --internal-http-port N
+                        Private manifest/results port for the runner's built-in
+                        HTTP server. Default: same as --http-port
   --public-host HOST    Hostname or IP published in result URLs. Default: ${DEFAULT_PUBLIC_HOST}
+  --job-meta PATH       Optional JSON metadata override for queued service jobs
   --exit-when-done      Exit after the run completes instead of keeping the
                         built-in HTTP server alive for manual browsing
   --fresh-cache         Drop the cached remote/worker tree before this run
@@ -135,15 +151,6 @@ need_cmd() {
 
 require_value() {
 	[[ $# -ge 2 ]] || die "missing value for $1"
-}
-
-path_within() {
-	local base
-	local target
-
-	base="$(realpath -m -- "$1")"
-	target="$(realpath -m -- "$2")"
-	[[ "${target}" == "${base}" || "${target}" == "${base}/"* ]]
 }
 
 find_virtiofsd() {
@@ -185,6 +192,37 @@ current_source_branch() {
 	else
 		printf '%s\n' "(detached HEAD)"
 	fi
+}
+
+apply_job_meta() {
+	[[ -n "${JOB_META_PATH}" ]] || return 0
+
+	eval "$(
+		python3 - "${JOB_META_PATH}" <<'PY'
+import json
+import shlex
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fp:
+    data = json.load(fp)
+
+mapping = {
+    "requested_mode": "MODE_LABEL",
+    "source_tree": "SOURCE_TREE_DISPLAY",
+    "source_branch": "SOURCE_BRANCH",
+    "source_head": "TREE_HEAD_DISPLAY",
+    "source_base": "TREE_BASE_DISPLAY",
+    "job_id": "SERVICE_JOB_ID",
+    "patch_count": "PATCH_COUNT",
+}
+
+for src_key, dst_key in mapping.items():
+    value = data.get(src_key, "")
+    if value is None:
+        value = ""
+    print(f"{dst_key}={shlex.quote(str(value))}")
+PY
+	)"
 }
 
 host_mem_kb() {
@@ -454,14 +492,14 @@ apply_patch_series() {
 }
 
 prepare_committed_source() {
-	BRANCH_NAME="$(branch_name_for_mode committed)"
-	BRANCH_BASE="${TREE_BASE}"
+	BRANCH_NAME="$(branch_name_for_mode "${MODE_LABEL}")"
+	BRANCH_BASE="$(branch_base_for_label)"
 	publish_branch_from_repo "${TREE}" "${TREE_HEAD}" "${BRANCH_NAME}"
 }
 
 prepare_dirty_source() {
-	BRANCH_NAME="$(branch_name_for_mode dirty)"
-	BRANCH_BASE="${TREE_HEAD}"
+	BRANCH_NAME="$(branch_name_for_mode "${MODE_LABEL}")"
+	BRANCH_BASE="$(branch_base_for_label)"
 	DIRTY_PATCH="${RUN_DIR}/dirty-tracked.patch"
 
 	prepare_materialize_repo
@@ -484,8 +522,8 @@ prepare_dirty_source() {
 }
 
 prepare_patches_source() {
-	BRANCH_NAME="$(branch_name_for_mode patches)"
-	BRANCH_BASE="${TREE_HEAD}"
+	BRANCH_NAME="$(branch_name_for_mode "${MODE_LABEL}")"
+	BRANCH_BASE="$(branch_base_for_label)"
 
 	prepare_materialize_repo
 	apply_patch_series
@@ -512,20 +550,20 @@ prepare_source_snapshot() {
 }
 
 resolve_mode_metadata() {
-	PATCH_COUNT=0
+	[[ -n "${PATCH_COUNT}" ]] || PATCH_COUNT=0
 
 	case "${MODE}" in
 	committed)
-		BRANCH_NAME="$(branch_name_for_mode committed)"
-		BRANCH_BASE="${TREE_BASE}"
+		BRANCH_NAME="$(branch_name_for_mode "${MODE_LABEL}")"
+		BRANCH_BASE="$(branch_base_for_label)"
 		;;
 	dirty)
-		BRANCH_NAME="$(branch_name_for_mode dirty)"
-		BRANCH_BASE="${TREE_HEAD}"
+		BRANCH_NAME="$(branch_name_for_mode "${MODE_LABEL}")"
+		BRANCH_BASE="$(branch_base_for_label)"
 		;;
 	patches)
-		BRANCH_NAME="$(branch_name_for_mode patches)"
-		BRANCH_BASE="${TREE_HEAD}"
+		BRANCH_NAME="$(branch_name_for_mode "${MODE_LABEL}")"
+		BRANCH_BASE="$(branch_base_for_label)"
 		collect_patch_files
 		;;
 	*)
@@ -538,6 +576,20 @@ branch_name_for_mode() {
 	local mode="$1"
 
 	printf '%s-%s-%s\n' "${DEFAULT_BRANCH_NAME}" "${mode}" "${RUN_ID}"
+}
+
+branch_base_for_label() {
+	case "${MODE_LABEL}" in
+	committed)
+		printf '%s\n' "${TREE_BASE_DISPLAY}"
+		;;
+	dirty|patches)
+		printf '%s\n' "${TREE_HEAD_DISPLAY}"
+		;;
+	*)
+		printf '%s\n' "${TREE_BASE_DISPLAY}"
+		;;
+	esac
 }
 
 print_explain_and_exit() {
@@ -565,13 +617,14 @@ Local vmksft execution plan
 ===========================
 
 Source tree:
-  path: ${TREE}
+  path: ${SOURCE_TREE_DISPLAY}
+  frozen execution tree: ${TREE}
   current branch: ${SOURCE_BRANCH}
-  current HEAD: ${TREE_HEAD}
+  current HEAD: ${TREE_HEAD_DISPLAY}
   base metadata: ${BRANCH_BASE}
 
 Selected mode:
-  mode: ${MODE}
+  mode: ${MODE_LABEL}
   published branch name: ${BRANCH_NAME}
   ${patch_line}
 
@@ -606,9 +659,10 @@ Branch handoff:
   virtiofsd: ${VIRTIOFSD_PATH:-not found}
 
 HTTP / results publishing:
-  bind address: 0.0.0.0
-  port: ${HTTP_PORT}
-  manifest fetch URL: http://127.0.0.1:${HTTP_PORT}/contest/branches.json
+  internal bind address: ${INTERNAL_HTTP_BIND}
+  internal manifest port: ${INTERNAL_HTTP_PORT}
+  public site port: ${HTTP_PORT}
+  manifest fetch URL: http://127.0.0.1:${INTERNAL_HTTP_PORT}/contest/branches.json
   site base URL: http://${PUBLIC_HOST}:${HTTP_PORT}/
   latest run URL: http://${PUBLIC_HOST}:${HTTP_PORT}/latest/index.html
   published executor base URL: ${run_url}
@@ -724,19 +778,22 @@ write_run_metadata() {
 		"${RUN_ID}" \
 		"${EXECUTOR_NAME}" \
 		"${EXECUTOR_TARGET}" \
-		"${MODE}" \
-		"${TREE}" \
+		"${MODE_LABEL}" \
+		"${SOURCE_TREE_DISPLAY}" \
 		"${SOURCE_BRANCH}" \
-		"${TREE_HEAD}" \
+		"${TREE_HEAD_DISPLAY}" \
+		"${TREE_BASE_DISPLAY}" \
 		"${BRANCH_NAME}" \
 		"${BRANCH_DATE}" \
 		"${PUBLIC_HOST}" \
 		"${HTTP_PORT}" \
-		"${RUN_PUBLIC_PREFIX}" <<'PY'
+		"${RUN_PUBLIC_PREFIX}" \
+		"${SERVICE_JOB_ID}" \
+		"${TREE}" <<'PY'
 import json
 import sys
 
-path, run_id, executor_name, targets, mode, source_tree, source_branch, source_head, published_branch, branch_date, public_host, http_port, run_public_prefix = sys.argv[1:]
+path, run_id, executor_name, targets, mode, source_tree, source_branch, source_head, source_base, published_branch, branch_date, public_host, http_port, run_public_prefix, job_id, actual_tree = sys.argv[1:]
 data = {
     "run_id": run_id,
     "executor_name": executor_name,
@@ -745,12 +802,17 @@ data = {
     "source_tree": source_tree,
     "source_branch": source_branch,
     "source_head": source_head,
+    "source_base": source_base,
+    "actual_tree": actual_tree,
     "published_branch": published_branch,
     "branch_date": branch_date,
     "public_host": public_host,
     "http_port": int(http_port),
     "run_public_prefix": run_public_prefix,
 }
+
+if job_id:
+    data["job_id"] = job_id
 
 with open(path, "w", encoding="utf-8") as fp:
     json.dump(data, fp, indent=2, sort_keys=True)
@@ -906,9 +968,24 @@ while [[ $# -gt 0 ]]; do
 		HTTP_PORT="$2"
 		shift 2
 		;;
+	--internal-http-bind)
+		require_value "$@"
+		INTERNAL_HTTP_BIND="$2"
+		shift 2
+		;;
+	--internal-http-port)
+		require_value "$@"
+		INTERNAL_HTTP_PORT="$2"
+		shift 2
+		;;
 	--public-host)
 		require_value "$@"
 		PUBLIC_HOST="$2"
+		shift 2
+		;;
+	--job-meta)
+		require_value "$@"
+		JOB_META_PATH="$2"
 		shift 2
 		;;
 	--exit-when-done)
@@ -945,15 +1022,23 @@ STATE_DIR="$(realpath -m -- "${STATE_DIR}")"
 if [[ -n "${PATCH_DIR}" ]]; then
 	PATCH_DIR="$(realpath -e -- "${PATCH_DIR}")"
 fi
+if [[ -n "${JOB_META_PATH}" ]]; then
+	JOB_META_PATH="$(realpath -e -- "${JOB_META_PATH}")"
+fi
+
+if [[ -z "${INTERNAL_HTTP_PORT}" ]]; then
+	INTERNAL_HTTP_PORT="${HTTP_PORT}"
+fi
+MODE_LABEL="${MODE}"
 
 [[ -d "${TREE}/tools/testing/selftests/net" ]] ||
 	die "tree does not look like a kernel checkout with selftests/net: ${TREE}"
 git -C "${TREE}" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 	die "tree is not a git repository: ${TREE}"
 [[ -d "${PATCH_DIR}" || -z "${PATCH_DIR}" ]] || die "--patch-dir is not a directory: ${PATCH_DIR}"
-path_within "${SCRIPT_DIR}" "${STATE_DIR}" ||
-	die "--state-dir must stay under ${SCRIPT_DIR}"
 [[ "${HTTP_PORT}" =~ ^[0-9]+$ ]] || die "--http-port must be a non-negative integer: ${HTTP_PORT}"
+[[ "${INTERNAL_HTTP_PORT}" =~ ^[0-9]+$ ]] ||
+	die "--internal-http-port must be a non-negative integer: ${INTERNAL_HTTP_PORT}"
 case "${MODE}" in
 committed|dirty|patches)
 	;;
@@ -983,6 +1068,7 @@ resolve_threads
 resolve_scheduler_limits
 [[ "${THREADS}" =~ ^[0-9]+$ ]] || die "--threads must resolve to a non-negative integer: ${THREADS}"
 SOURCE_BRANCH="$(current_source_branch)"
+SOURCE_TREE_DISPLAY="${TREE}"
 
 RUN_ID="$(date -u +%Y%m%d-%H%M%S)-$$"
 RUN_DIR="${STATE_DIR}/runs/${RUN_ID}"
@@ -1016,6 +1102,16 @@ ln -sfn "runs/${RUN_ID}" "${SITE_ROOT}/latest"
 BRANCH_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 TREE_HEAD="$(git -C "${TREE}" rev-parse HEAD)"
 TREE_BASE="$(git -C "${TREE}" rev-parse HEAD^ 2>/dev/null || git -C "${TREE}" rev-parse HEAD)"
+TREE_HEAD_DISPLAY="${TREE_HEAD}"
+TREE_BASE_DISPLAY="${TREE_BASE}"
+if [[ -n "${JOB_META_PATH}" ]]; then
+	apply_job_meta
+fi
+[[ -n "${MODE_LABEL}" ]] || MODE_LABEL="${MODE}"
+[[ -n "${SOURCE_TREE_DISPLAY}" ]] || SOURCE_TREE_DISPLAY="${TREE}"
+[[ -n "${SOURCE_BRANCH}" ]] || SOURCE_BRANCH="$(current_source_branch)"
+[[ -n "${TREE_HEAD_DISPLAY}" ]] || TREE_HEAD_DISPLAY="${TREE_HEAD}"
+[[ -n "${TREE_BASE_DISPLAY}" ]] || TREE_BASE_DISPLAY="${TREE_BASE}"
 resolve_mode_metadata
 
 if (( EXPLAIN_ONLY == 1 )); then
@@ -1036,7 +1132,7 @@ refresh_site_history
 start_site_refresh_loop
 
 log "host capacity: cpus=${HOST_CPUS} mem_mib=${HOST_MEM_MIB}"
-log "using source mode: ${MODE}"
+log "using source mode: ${MODE_LABEL}"
 if [[ "${MODE}" == "patches" ]]; then
 	log "using patch directory: ${PATCH_DIR}"
 fi
@@ -1058,16 +1154,16 @@ cat > "${SITE_ROOT}/contest/branches.json" <<EOF
 ]
 EOF
 
-log "starting HTTP server on 0.0.0.0:${HTTP_PORT}"
+log "starting private HTTP server on ${INTERNAL_HTTP_BIND}:${INTERNAL_HTTP_PORT}"
 python3 "${SCRIPT_DIR}/serve-vmksft-http.py" \
-	--port "${HTTP_PORT}" \
-	--bind 0.0.0.0 \
+	--port "${INTERNAL_HTTP_PORT}" \
+	--bind "${INTERNAL_HTTP_BIND}" \
 	--directory "${SITE_ROOT}" \
 	>"${RUN_DIR}/http-server.log" 2>&1 &
 HTTP_PID=$!
 
 for _ in $(seq 1 20); do
-	if python3 - "${HTTP_PORT}" <<'PY'
+	if python3 - "${INTERNAL_HTTP_PORT}" <<'PY'
 import sys
 import urllib.request
 
@@ -1096,7 +1192,7 @@ init = force
 deadline_minutes = 480
 
 [remote]
-branches = http://127.0.0.1:${HTTP_PORT}/contest/branches.json
+branches = http://127.0.0.1:${INTERNAL_HTTP_PORT}/contest/branches.json
 
 [local]
 tree_path = ${WORKER_TREE}

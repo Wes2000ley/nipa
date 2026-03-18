@@ -1,5 +1,34 @@
 services:
+  vmksft-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nipa-vmksft:fedora44
+    init: true
+    privileged: true
+    restart: unless-stopped
+    working_dir: /workspace/nipa/local
+    environment:
+      NIPA_KERNEL_TREE: /workspace/kernel
+      NIPA_STATE_DIR: /workspace/nipa/local/state
+      NIPA_PATCH_DIR: /workspace/patches
+      NIPA_WEB_PORT: ${NIPA_WEB_PORT:-8888}
+      NIPA_PUBLIC_HOST: ${NIPA_PUBLIC_HOST:-localhost}
+    ports:
+      - "${NIPA_WEB_PORT:-8888}:${NIPA_WEB_PORT:-8888}"
+    volumes:
+      - ..:/workspace/nipa:ro
+      - ${NIPA_STATE_DIR:-./state}:/workspace/nipa/local/state
+      - ${NIPA_KERNEL_TREE:-/tmp/nipa-missing-kernel-tree}:/workspace/kernel:ro
+      - ${NIPA_PATCH_DIR:-./patches}:/workspace/patches:ro
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        exec python3 /workspace/nipa/local/vmksft_service.py
+
   vmksft-runner:
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,6 +36,18 @@ services:
     init: true
     privileged: true
     working_dir: /workspace/nipa/local
+    environment:
+      NIPA_KERNEL_TREE: /workspace/kernel
+      NIPA_STATE_DIR: /workspace/nipa/local/state
+      NIPA_PATCH_DIR: /workspace/patches
+      NIPA_WEB_PORT: ${NIPA_WEB_PORT:-8888}
+      NIPA_PUBLIC_HOST: ${NIPA_PUBLIC_HOST:-localhost}
+      VMKSFT_MODE: ${VMKSFT_MODE:-committed}
+      VMKSFT_BUILD_CLEAN: ${VMKSFT_BUILD_CLEAN:-config-change}
+      VMKSFT_THREADS: ${VMKSFT_THREADS:-auto}
+      VMKSFT_CPUS: ${VMKSFT_CPUS:-auto}
+      VMKSFT_MEMORY: ${VMKSFT_MEMORY:-auto}
+      VMKSFT_INIT_PROMPT: ${VMKSFT_INIT_PROMPT:-#}
     volumes:
       - ..:/workspace/nipa:ro
       - ${NIPA_STATE_DIR:-./state}:/workspace/nipa/local/state
@@ -35,25 +76,3 @@ services:
           args+=(--patch-dir /workspace/patches)
         fi
         exec "$${args[@]}"
-
-  vmksft-web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: nipa-vmksft:fedora44
-    init: true
-    restart: unless-stopped
-    working_dir: /workspace/nipa/local
-    ports:
-      - "${NIPA_WEB_PORT:-8888}:${NIPA_WEB_PORT:-8888}"
-    volumes:
-      - ..:/workspace/nipa:ro
-      - ${NIPA_STATE_DIR:-./state}:/workspace/nipa/local/state:ro
-    command:
-      - /bin/bash
-      - -lc
-      - |
-        exec python3 /workspace/nipa/local/serve-vmksft-http.py \
-          --bind 0.0.0.0 \
-          --port "$${NIPA_WEB_PORT:-8888}" \
-          --directory /workspace/nipa/local/state/vmksft-net/site

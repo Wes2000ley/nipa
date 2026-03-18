@@ -64,7 +64,11 @@ Common knobs:
 - ``--memory SIZE|auto`` controls guest RAM
 - ``--init-prompt PROMPT`` overrides the initial guest prompt if virtme-ng
   differs from the default on this host
-- ``--http-port N`` changes the listening port from the default ``8888``
+- ``--http-port N`` changes the public port embedded in generated result URLs
+- ``--internal-http-bind HOST`` changes the bind address of the runner's
+  private manifest server
+- ``--internal-http-port N`` changes the private manifest port used by the
+  runner's built-in HTTP server
 - ``--public-host HOST`` changes the hostname or IP published in result URLs
 - ``--exit-when-done`` makes the wrapper exit after the run instead of keeping
   the built-in HTTP server alive for manual browsing
@@ -97,20 +101,32 @@ stack, and the Python modules used by the local scripts come from the dedicated
 virtualenv rather than from duplicate Fedora RPMs.
 
 From the repo root, change into ``local/``, copy ``.env.example`` to ``.env``,
-edit the paths you want, then build and run:
+edit the paths you want, then build and start the long-lived service:
 
 .. code-block:: bash
 
   cd ~/nipa/local
   cp .env.example .env
   docker compose build
-  docker compose up -d vmksft-web
-  docker compose run --rm vmksft-runner
+  docker compose up -d vmksft-service
 
-The runner is a one-shot container. It uses ``--exit-when-done`` so it exits
-with the vmksft result code when the run finishes. The separate ``vmksft-web``
-service keeps serving ``local/state/vmksft-net/site`` on
-``http://localhost:8888/`` by default.
+Submit work through the queued service:
+
+.. code-block:: bash
+
+  docker compose exec vmksft-service \
+    python3 /workspace/nipa/local/vmksft_queue.py submit --mode committed
+
+  docker compose exec vmksft-service \
+    python3 /workspace/nipa/local/vmksft_queue.py list
+
+The long-lived container serves ``local/state/vmksft-net/site`` on
+``http://localhost:8888/`` by default and executes queued jobs strictly one at
+a time.
+
+The legacy one-shot runner is still available as the optional Compose profile
+``legacy`` via the ``vmksft-runner`` service, but it is now for manual
+debugging rather than the default workflow.
 
 By default, Compose bind-mounts ``local/state/`` exactly like the native local
 workflow. If you want the artifacts somewhere else on the host, set
@@ -129,6 +145,20 @@ tree-based cache key. The default local policy is ``config-change``, which lets
 ordinary source edits use incremental ``vng --build`` rebuilds and only forces
 ``make mrproper`` when the config inputs change. Use ``--build-clean always`` if
 you want the stricter CI-style clean build behavior on every tree change.
+
+The queue service keeps its own control files under
+``local/state/vmksft-net/service/``. The important subdirectories are:
+
+- ``jobs/<job-id>/`` for frozen source snapshots plus immutable job metadata
+- ``queue/`` for queued job pointers
+- ``running/``, ``complete/``, ``failed/``, and ``cancelled/`` for state
+  transitions
+
+Queued jobs freeze their source input at submission time. ``committed`` jobs
+capture the exact current HEAD, ``dirty`` jobs capture the working tree plus
+untracked files into a synthetic committed snapshot, and ``patches`` jobs copy
+and apply the current patch directory into a frozen snapshot. This means queued
+jobs do not drift if the source tree or patch directory changes before they run.
 
 On larger hosts the default resource sizing is intentionally aggressive. The
 wrapper auto-sizes guest CPU count and guest RAM, and it derives the automatic
@@ -153,6 +183,8 @@ After the executor starts, the wrapper serves a stable site root under
   contest UI data sources
 - ``/latest/`` as a symlink to the most recent run
 - ``/runs/<run-id>/`` as stable URLs for prior runs
+- ``/service/status.json`` and ``/service/jobs.json`` as the long-lived queue
+  status endpoints
 
 Each run keeps its own redirecting dashboard at ``/runs/<run-id>/index.html``.
 That URL lands in the shared contest log with the run's branch preselected.
@@ -168,23 +200,43 @@ The wrapper uses a small custom local HTTP server so the raw extensionless log
 files under ``results/`` are served as inline text instead of being treated as
 downloads by the browser.
 
+Systemd samples
+---------------
+
+Two sample unit files live under ``local/systemd/``:
+
+- ``nipa-vmksft-compose.service.sample`` manages the Docker Compose service
+- ``nipa-vmksft-native.service.sample`` runs the same long-lived daemon
+  directly on the host
+
+Both samples expect you to replace ``#NIPA#`` with the absolute repo path. The
+native sample also expects ``#USER#`` to be replaced with the account that owns
+the repo and the state directory. Both use ``local/.env`` as the shared config
+source. Native submissions use the same queue CLI directly:
+
+.. code-block:: bash
+
+  python3 ~/nipa/local/vmksft_queue.py submit --mode dirty
+
 Notes
 -----
 
 - The wrapper intentionally runs the local vmksft shim from a non-git working
   directory. This avoids an odd branch lookup shortcut in NIPA's fetcher and
   forces the executor to resolve the branch from the worker clone's remotes.
-- The wrapper refuses a ``--state-dir`` outside ``~/nipa/local/``. All writable
-  harness state stays under ``local/state/`` by design.
+- The one-shot wrapper now accepts any absolute ``--state-dir``. The long-lived
+  service still keeps all of its writable data under the configured
+  ``NIPA_STATE_DIR`` parent.
 - The default initial prompt is ``#`` on purpose. The guest prompt seen before
   NIPA resets ``PS1`` includes a dynamic hostname and working directory, so a
   suffix match is more robust than hardcoding the full prompt string.
 - The HTTP server listens on all interfaces so other machines can browse the
   generated results. The executor still fetches the manifest locally via
   ``127.0.0.1`` to avoid depending on external name resolution.
-- The Compose runner still starts this built-in HTTP server during execution so
-  the fetcher can consume ``branches.json`` locally. The separate web service
-  is for persistent browsing after the runner exits.
+- The runner still starts a built-in HTTP server during execution so the
+  fetcher can consume ``branches.json`` locally. Under the long-lived service
+  that server is private to the job and uses a loopback-only port chosen by the
+  daemon, while the daemon itself owns the stable public browse port.
 - The worker tree cache is there to avoid unnecessary rebuilds on reruns. Use
   ``--fresh-cache`` if the cache gets wedged or you want to force a fully clean
   local reproduction.

@@ -1,0 +1,16 @@
+[Unit]
+Description=Long-lived local vmksft service (Docker Compose)
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=#NIPA#/local
+ExecStart=/usr/bin/docker compose --env-file #NIPA#/local/.env up -d vmksft-service
+ExecStop=/usr/bin/docker compose --env-file #NIPA#/local/.env down
+TimeoutStartSec=0
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

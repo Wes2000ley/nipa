@@ -128,6 +128,7 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
         procps-ng \
         psmisc \
         python3 \
+        python3-jsonschema \
         python3-pip \
         python-unversioned-command \
         qemu-img \

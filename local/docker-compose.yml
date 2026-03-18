@@ -25,7 +25,7 @@ services:
       - /bin/bash
       - -lc
       - |
-        exec python3 /workspace/nipa/local/vmksft_service.py
+        exec python3 /workspace/nipa/local/bin/vmksft_service.py
 
   vmksft-runner:
     profiles: ["legacy"]

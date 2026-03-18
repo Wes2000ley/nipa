@@ -125,8 +125,15 @@ def resolve_path(value, base_dir):
     return path.resolve()
 
 
+def find_local_root(script_path):
+    resolved = Path(script_path).resolve()
+    if resolved.parent.name in {"bin", "lib", "tests", "web", "docs", "systemd"}:
+        return resolved.parent.parent
+    return resolved.parent
+
+
 def load_runtime_config(script_path):
-    script_dir = Path(script_path).resolve().parent
+    script_dir = find_local_root(script_path)
     load_local_env(script_dir)
     repo_root = script_dir.parent
 

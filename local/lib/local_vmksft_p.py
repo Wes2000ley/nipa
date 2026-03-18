@@ -15,7 +15,8 @@ from pathlib import Path
 
 
 LOCAL_DIR = Path(__file__).resolve().parent
-NIPA_ROOT = LOCAL_DIR.parent
+LOCAL_ROOT = LOCAL_DIR.parent
+NIPA_ROOT = LOCAL_ROOT.parent
 REMOTE_DIR = NIPA_ROOT / "contest" / "remote"
 if str(REMOTE_DIR) not in sys.path:
     sys.path.insert(0, str(REMOTE_DIR))

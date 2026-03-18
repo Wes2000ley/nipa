@@ -5,9 +5,10 @@ import unittest
 from pathlib import Path
 
 
-LOCAL_DIR = Path(__file__).resolve().parent
-if str(LOCAL_DIR) not in sys.path:
-    sys.path.insert(0, str(LOCAL_DIR))
+TESTS_DIR = Path(__file__).resolve().parent
+LIB_DIR = TESTS_DIR.parent / "lib"
+if str(LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(LIB_DIR))
 
 from local_vmksft_p import build_nstat_history_path, build_test_command
 

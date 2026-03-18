@@ -19,7 +19,7 @@ which:
 - keeps the HTTP server alive after completion so you can continue browsing the
   generated pages until you stop it with ``Ctrl-C`` or ``Ctrl-Z``; pass
   ``--exit-when-done`` to skip that manual wait
-- runs ``local/local_vmksft_p.py`` with a generated config and the cached
+- runs ``local/lib/local_vmksft_p.py`` with a generated config and the cached
   worker tree
 
 This is still narrower than the full cloud matrix, but it now covers a much
@@ -28,6 +28,18 @@ as ``net/af_unix``, ``net/can``, ``net/forwarding``, ``net/mptcp``,
 ``net/netfilter``, ``net/openvswitch``, ``net/ovpn``, ``net/packetdrill``,
 ``net/tcp_ao``, ``nci``, and the software-oriented ``drivers/net/*`` suites
 used by this harness.
+
+Layout
+------
+
+The ``local/`` tree is split by subsystem:
+
+- ``bin/`` for Python entrypoints and helper scripts
+- ``lib/`` for the reusable Python implementation modules
+- ``web/`` for the local contest UI assets and templates
+- ``tests/`` for the local unit tests
+- ``docs/`` for supporting local documentation such as dependency notes
+- ``systemd/`` for sample unit files
 
 Usage
 -----
@@ -115,10 +127,10 @@ Submit work through the queued service:
 .. code-block:: bash
 
   docker compose exec vmksft-service \
-    python3 /workspace/nipa/local/vmksft_queue.py submit --mode committed
+    python3 /workspace/nipa/local/bin/vmksft_queue.py submit --mode committed
 
   docker compose exec vmksft-service \
-    python3 /workspace/nipa/local/vmksft_queue.py list
+    python3 /workspace/nipa/local/bin/vmksft_queue.py list
 
 The long-lived container serves ``local/state/vmksft-net/site`` on
 ``http://localhost:8888/`` by default and executes queued jobs strictly one at
@@ -216,7 +228,7 @@ source. Native submissions use the same queue CLI directly:
 
 .. code-block:: bash
 
-  python3 ~/nipa/local/vmksft_queue.py submit --mode dirty
+  python3 ~/nipa/local/bin/vmksft_queue.py submit --mode dirty
 
 Notes
 -----
@@ -246,4 +258,4 @@ Notes
 - Generated runtime state is ignored by git via ``local/state/`` in the repo
   root ``.gitignore``.
 - Host and userspace prerequisites are listed in
-  ``local/VMKSFT_DEPENDENCIES.rst``.
+  ``local/docs/VMKSFT_DEPENDENCIES.rst``.

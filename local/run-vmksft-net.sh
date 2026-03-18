@@ -8,6 +8,9 @@ readonly SCRIPT_DIR
 NIPA_ROOT="$(cd -P -- "${SCRIPT_DIR}/.." && pwd -P)"
 readonly NIPA_ROOT
 readonly UI_ROOT="${NIPA_ROOT}/ui"
+readonly BIN_DIR="${SCRIPT_DIR}/bin"
+readonly LIB_DIR="${SCRIPT_DIR}/lib"
+readonly WEB_DIR="${SCRIPT_DIR}/web"
 readonly DEFAULT_TREE="/home/wes/net"
 readonly DEFAULT_STATE_DIR="${SCRIPT_DIR}/state/vmksft-net"
 readonly DEFAULT_THREADS="auto"
@@ -32,7 +35,7 @@ readonly DEFAULT_BUILD_CLEAN="config-change"
 readonly DEFAULT_DIRTY_COMMIT_MSG="local-vmksft dirty snapshot"
 readonly DEFAULT_PATCH_COMMIT_PREFIX="local-vmksft patch snapshot"
 readonly EXECUTOR_NAME="vmksft-net-local"
-readonly CONTEST_HTML_TEMPLATE="${SCRIPT_DIR}/contest.html"
+readonly CONTEST_HTML_TEMPLATE="${WEB_DIR}/contest.html"
 readonly EXECUTOR_TARGET="net net/packetdrill drivers/net/netdevsim net/mptcp"
 #readonly EXECUTOR_TARGET="net net/af_unix net/can net/forwarding net/hsr net/mptcp net/netfilter net/openvswitch net/ovpn net/packetdrill net/tcp_ao nci drivers/net/bonding drivers/net/netconsole drivers/net/netdevsim drivers/net/team drivers/net/virtio_net"
 
@@ -722,9 +725,9 @@ stage_ui_assets() {
 	local asset
 
 	mkdir -p "${destination}/assets"
-	cp "${SCRIPT_DIR}/nipa.css" "${destination}/assets/nipa.css"
-	cp "${SCRIPT_DIR}/nipa.js" "${destination}/assets/nipa.js"
-	cp "${SCRIPT_DIR}/contest.js" "${destination}/assets/contest.js"
+	cp "${WEB_DIR}/nipa.css" "${destination}/assets/nipa.css"
+	cp "${WEB_DIR}/nipa.js" "${destination}/assets/nipa.js"
+	cp "${WEB_DIR}/contest.js" "${destination}/assets/contest.js"
 
 	for asset in \
 		"favicon-contest.png" \
@@ -854,7 +857,7 @@ EOF
 }
 
 render_results_page() {
-	python3 "${SCRIPT_DIR}/render-vmksft-results.py" \
+	python3 "${BIN_DIR}/render-vmksft-results.py" \
 		--manifest "${MANIFEST_PATH}" \
 		--summary-json "${SUMMARY_JSON}" \
 		--html "${SUMMARY_HTML}" \
@@ -871,7 +874,7 @@ render_results_page() {
 }
 
 refresh_site_history() {
-	python3 "${SCRIPT_DIR}/build-vmksft-history.py" \
+	python3 "${BIN_DIR}/build-vmksft-history.py" \
 		--state-dir "${STATE_DIR}" \
 		--site-root "${SITE_ROOT}" \
 		--executor-name "${EXECUTOR_NAME}"
@@ -1155,7 +1158,7 @@ cat > "${SITE_ROOT}/contest/branches.json" <<EOF
 EOF
 
 log "starting private HTTP server on ${INTERNAL_HTTP_BIND}:${INTERNAL_HTTP_PORT}"
-python3 "${SCRIPT_DIR}/serve-vmksft-http.py" \
+python3 "${BIN_DIR}/serve-vmksft-http.py" \
 	--port "${INTERNAL_HTTP_PORT}" \
 	--bind "${INTERNAL_HTTP_BIND}" \
 	--directory "${SITE_ROOT}" \
@@ -1238,7 +1241,7 @@ log "running local_vmksft_p.py for TARGETS=${EXECUTOR_TARGET}"
 set +e
 (
 	cd "${RUN_DIR}"
-	python3 "${SCRIPT_DIR}/local_vmksft_p.py" "${CONFIG_PATH}"
+	python3 "${LIB_DIR}/local_vmksft_p.py" "${CONFIG_PATH}"
 ) 2>&1 | tee "${RUN_DIR}/executor.log"
 EXECUTOR_RC=${PIPESTATUS[0]}
 set -e

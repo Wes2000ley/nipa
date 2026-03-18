@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 
-import os
 import subprocess
 import sys
 import tempfile
@@ -9,8 +8,10 @@ import unittest
 
 from pathlib import Path
 
-
-sys.path.insert(0, os.path.dirname(__file__))
+TESTS_DIR = Path(__file__).resolve().parent
+LIB_DIR = TESTS_DIR.parent / "lib"
+if str(LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(LIB_DIR))
 
 from vmksft_service_lib import (  # noqa: E402
     JobOptions,

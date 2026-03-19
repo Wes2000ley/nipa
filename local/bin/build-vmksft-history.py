@@ -243,7 +243,7 @@ def build_run_entry(run_dir, executor_name, latest_run_id):
         "live_status_url": f"/runs/{run_id}/{executor_name}/live-status.json",
         "results_url": f"/runs/{run_id}/{executor_name}/results/",
         "executor_log_url": f"/runs/{run_id}/executor.log",
-        "http_log_url": f"/runs/{run_id}/http-server.log",
+        "http_log_url": "",
         "config_url": f"/runs/{run_id}/vmksft-net-local.ini",
     }
     return entry

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 
+import dataclasses
 import subprocess
 import sys
 import tempfile
@@ -9,20 +10,25 @@ import unittest
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
+BIN_DIR = TESTS_DIR.parent / "bin"
 LIB_DIR = TESTS_DIR.parent / "lib"
+if str(BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(BIN_DIR))
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 
+from vmksft_service import VmksftService  # noqa: E402
+from vmksft_job_lib import create_relative_symlink  # noqa: E402
 from vmksft_service_lib import (  # noqa: E402
     JobOptions,
     RuntimeConfig,
-    build_runner_command,
     cancel_queued_job,
     enqueue_job,
     ensure_layout,
     iter_job_records,
     load_job_record,
     next_queued_job,
+    patch_has_diff,
     recover_stale_running_jobs,
     write_public_status,
 )
@@ -34,7 +40,6 @@ class VmksftServiceTest(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self.script_dir = self.root / "local"
         self.script_dir.mkdir(parents=True)
-        (self.script_dir / "run-vmksft-net.sh").write_text("#!/bin/bash\n", encoding="utf-8")
         self.kernel_tree = self.root / "kernel"
         self.patch_dir = self.root / "patches"
         self.patch_dir.mkdir()
@@ -42,13 +47,11 @@ class VmksftServiceTest(unittest.TestCase):
 
         self.config = RuntimeConfig(
             script_dir=self.script_dir,
-            repo_root=self.root,
             kernel_tree=self.kernel_tree,
-            state_dir=self.root / "state",
             harness_state_dir=self.root / "state" / "vmksft-net",
-            patch_dir=self.patch_dir,
             public_host="localhost",
             web_port=8888,
+            skip_tests="",
         )
         ensure_layout(self.config)
 
@@ -94,6 +97,62 @@ class VmksftServiceTest(unittest.TestCase):
         self.assertIn("dirty", tracked.read_text(encoding="utf-8"))
         self.assertEqual(record["requested_mode"], "dirty")
 
+    def test_enqueue_patches_job_freezes_explicit_patch_dir(self):
+        tracked = self.kernel_tree / "tools/testing/selftests/net/sample.sh"
+        tracked.write_text("#!/bin/sh\necho queued patch\n", encoding="utf-8")
+        patch_path = self.patch_dir / "0001-sample.patch"
+        with patch_path.open("wb") as fp:
+            subprocess.run(
+                ["git", "-C", str(self.kernel_tree), "diff", "--binary", "--no-ext-diff", "HEAD", "--"],
+                check=True,
+                stdout=fp,
+                stderr=subprocess.PIPE,
+            )
+
+        record = enqueue_job(self.config, JobOptions(mode="patches", patch_dir=str(self.patch_dir)))
+
+        tracked.write_text("#!/bin/sh\necho changed later\n", encoding="utf-8")
+        patch_path.write_text("not a patch anymore\n", encoding="utf-8")
+
+        snapshot_tree = Path(record["snapshot_tree"])
+        snapshot_file = snapshot_tree / "tools/testing/selftests/net/sample.sh"
+        self.assertIn("queued patch", snapshot_file.read_text(encoding="utf-8"))
+        self.assertEqual(record["patch_dir"], str(self.patch_dir))
+        self.assertEqual(record["patch_count"], 1)
+
+    def test_enqueue_patches_job_requires_explicit_patch_dir(self):
+        with self.assertRaisesRegex(ValueError, "--patch-dir is required"):
+            enqueue_job(self.config, JobOptions(mode="patches"))
+
+    def test_enqueue_job_freezes_service_skip_tests(self):
+        config = dataclasses.replace(self.config, skip_tests="net:skip-one.sh skip-two.sh")
+        first = enqueue_job(config, JobOptions())
+        self.assertEqual(first["skip_tests"], "net:skip-one.sh skip-two.sh")
+
+        updated = load_job_record(config, first["job_id"])
+        self.assertEqual(updated["skip_tests"], "net:skip-one.sh skip-two.sh")
+
+        changed = dataclasses.replace(config, skip_tests="net:skip-three.sh")
+        second = enqueue_job(changed, JobOptions())
+        self.assertEqual(second["skip_tests"], "net:skip-three.sh")
+
+        unchanged = load_job_record(config, first["job_id"])
+        self.assertEqual(unchanged["skip_tests"], "net:skip-one.sh skip-two.sh")
+
+    def test_patch_has_diff_ignores_cover_letter_separator(self):
+        cover = self.patch_dir / "0000-cover-letter.patch"
+        cover.write_text(
+            "From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001\n"
+            "Subject: [PATCH 0/1] cover letter\n"
+            "\n"
+            "Summary only.\n"
+            "---\n"
+            " 1 file changed, 1 insertion(+)\n",
+            encoding="utf-8",
+        )
+
+        self.assertFalse(patch_has_diff(cover))
+
     def test_cancel_queued_job_marks_job_cancelled(self):
         record = enqueue_job(self.config, JobOptions())
         self.assertTrue(cancel_queued_job(self.config, record["job_id"]))
@@ -116,16 +175,25 @@ class VmksftServiceTest(unittest.TestCase):
         self.assertEqual(updated["state"]["run_exit_code"], 130)
         self.assertTrue((self.config.service_root / "failed" / record["job_id"]).is_symlink())
 
-    def test_build_runner_command_uses_private_internal_port_and_job_meta(self):
+    def test_service_build_job_command_uses_unified_entrypoint(self):
         record = enqueue_job(self.config, JobOptions(fresh_cache=True))
 
-        command = build_runner_command(self.config, record, 19001)
-        self.assertIn("--internal-http-port", command)
-        self.assertIn("19001", command)
-        self.assertIn("--mode", command)
-        self.assertIn("committed", command)
-        self.assertIn("--job-meta", command)
-        self.assertIn("--fresh-cache", command)
+        command = VmksftService(self.config).build_job_command(record["job_id"])
+        self.assertEqual(command[0], sys.executable)
+        self.assertTrue(command[1].endswith("/local/bin/vmksft_service.py"))
+        self.assertEqual(command[2:], ["run-job", "--job-id", record["job_id"]])
+
+    def test_create_relative_symlink_replaces_stale_directory(self):
+        target = self.root / "target"
+        target.mkdir()
+        link = self.root / "stale-link"
+        link.mkdir()
+        (link / "old.txt").write_text("stale\n", encoding="utf-8")
+
+        create_relative_symlink(link, target)
+
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), target)
 
 
 if __name__ == "__main__":

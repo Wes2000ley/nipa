@@ -7,72 +7,21 @@ services:
     init: true
     privileged: true
     restart: unless-stopped
-    working_dir: /workspace/nipa/local
+    working_dir: /workspace/local
     environment:
       NIPA_KERNEL_TREE: /workspace/kernel
-      NIPA_STATE_DIR: /workspace/nipa/local/state
-      NIPA_PATCH_DIR: /workspace/patches
+      NIPA_STATE_DIR: /workspace/local/state
       NIPA_WEB_PORT: ${NIPA_WEB_PORT:-8888}
       NIPA_PUBLIC_HOST: ${NIPA_PUBLIC_HOST:-localhost}
+      NIPA_VMKSFT_SKIP_TESTS: ${NIPA_VMKSFT_SKIP_TESTS:-}
     ports:
       - "${NIPA_WEB_PORT:-8888}:${NIPA_WEB_PORT:-8888}"
     volumes:
-      - ..:/workspace/nipa:ro
-      - ${NIPA_STATE_DIR:-./state}:/workspace/nipa/local/state
+      - .:/workspace/local:ro
+      - ${NIPA_STATE_DIR:-./state}:/workspace/local/state
       - ${NIPA_KERNEL_TREE:-/tmp/nipa-missing-kernel-tree}:/workspace/kernel:ro
-      - ${NIPA_PATCH_DIR:-./patches}:/workspace/patches:ro
     command:
       - /bin/bash
       - -lc
       - |
-        exec python3 /workspace/nipa/local/bin/vmksft_service.py
-
-  vmksft-runner:
-    profiles: ["legacy"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: nipa-vmksft:fedora44
-    init: true
-    privileged: true
-    working_dir: /workspace/nipa/local
-    environment:
-      NIPA_KERNEL_TREE: /workspace/kernel
-      NIPA_STATE_DIR: /workspace/nipa/local/state
-      NIPA_PATCH_DIR: /workspace/patches
-      NIPA_WEB_PORT: ${NIPA_WEB_PORT:-8888}
-      NIPA_PUBLIC_HOST: ${NIPA_PUBLIC_HOST:-localhost}
-      VMKSFT_MODE: ${VMKSFT_MODE:-committed}
-      VMKSFT_BUILD_CLEAN: ${VMKSFT_BUILD_CLEAN:-config-change}
-      VMKSFT_THREADS: ${VMKSFT_THREADS:-auto}
-      VMKSFT_CPUS: ${VMKSFT_CPUS:-auto}
-      VMKSFT_MEMORY: ${VMKSFT_MEMORY:-auto}
-      VMKSFT_INIT_PROMPT: ${VMKSFT_INIT_PROMPT:-#}
-    volumes:
-      - ..:/workspace/nipa:ro
-      - ${NIPA_STATE_DIR:-./state}:/workspace/nipa/local/state
-      - ${NIPA_KERNEL_TREE:-/tmp/nipa-missing-kernel-tree}:/workspace/kernel:ro
-      - ${NIPA_PATCH_DIR:-./patches}:/workspace/patches:ro
-    command:
-      - /bin/bash
-      - -lc
-      - |
-        set -euo pipefail
-        args=(
-          /workspace/nipa/local/run-vmksft-net.sh
-          --tree /workspace/kernel
-          --state-dir /workspace/nipa/local/state/vmksft-net
-          --mode "$${VMKSFT_MODE:-committed}"
-          --build-clean "$${VMKSFT_BUILD_CLEAN:-config-change}"
-          --threads "$${VMKSFT_THREADS:-auto}"
-          --cpus "$${VMKSFT_CPUS:-auto}"
-          --memory "$${VMKSFT_MEMORY:-auto}"
-          --init-prompt "$${VMKSFT_INIT_PROMPT:-#}"
-          --http-port "$${NIPA_WEB_PORT:-8888}"
-          --public-host "$${NIPA_PUBLIC_HOST:-localhost}"
-          --exit-when-done
-        )
-        if [[ "$${VMKSFT_MODE:-committed}" == "patches" ]]; then
-          args+=(--patch-dir /workspace/patches)
-        fi
-        exec "$${args[@]}"
+        exec python3 /workspace/local/bin/vmksft_service.py

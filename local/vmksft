@@ -7,32 +7,33 @@ LOCAL_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly LOCAL_DIR
 readonly COMPOSE_FILE="${LOCAL_DIR}/docker-compose.yml"
 readonly COMPOSE_SERVICE="vmksft-service"
-readonly HOST_QUEUE="${LOCAL_DIR}/bin/vmksft_queue.py"
-readonly CONTAINER_QUEUE="/workspace/nipa/local/bin/vmksft_queue.py"
+readonly CONTAINER_QUEUE="/workspace/local/bin/vmksft_queue.py"
+readonly CONTAINER_PATCH_ROOT="/tmp/local-vmksft-uploaded-patches"
+
+PREPARED_QUEUE_ARGS=()
+STAGED_PATCH_DIR=""
 
 usage() {
 	cat <<'EOF'
 Usage:
   vmksft committed [queue-options...]
   vmksft dirty [queue-options...]
-  vmksft patches [queue-options...]
+  vmksft patches --patch-dir PATH [queue-options...]
   vmksft submit [queue-options...]
   vmksft list
   vmksft show JOB_ID
   vmksft cancel JOB_ID
-  vmksft backend
 
 Examples:
   ./vmksft committed
   ./vmksft dirty --threads 4
-  ./vmksft patches --fresh-cache
+  ./vmksft patches --patch-dir ~/series --fresh-cache
   ./vmksft list
 
 Behavior:
-  - If the Docker Compose vmksft service is running, commands are executed there.
-  - Otherwise, if the native nipa-vmksft-native systemd service is active,
-    commands run directly on the host.
-  - Set VMKSFT_BACKEND=docker or VMKSFT_BACKEND=native to override detection.
+  - The only supported runtime is the long-lived Docker Compose service.
+  - Start it with `docker compose up -d vmksft-service` or the Compose systemd unit.
+  - `patches` mode freezes the supplied patch directory at queue time.
 EOF
 }
 
@@ -57,6 +58,7 @@ run_compose() {
 	local rc=0
 	local quoted_local_dir=""
 	local quoted_cmd=""
+
 	while IFS= read -r -d '' item; do
 		args+=("${item}")
 	done < <(compose_args)
@@ -87,107 +89,171 @@ run_compose() {
 	return "${rc}"
 }
 
-compose_service_running() {
-	command -v docker >/dev/null 2>&1 || return 1
-	[[ -f "${COMPOSE_FILE}" ]] || return 1
-	run_compose ps --status running --services 2>/dev/null | grep -qx "${COMPOSE_SERVICE}"
-}
-
-native_service_running() {
-	command -v systemctl >/dev/null 2>&1 || return 1
-	systemctl is-active --quiet nipa-vmksft-native
-}
-
-detect_backend() {
-	case "${VMKSFT_BACKEND:-auto}" in
-	docker)
-		printf 'docker\n'
-		return 0
-		;;
-	native)
-		printf 'native\n'
-		return 0
-		;;
-	auto)
-		;;
-	*)
-		printf 'vmksft: unsupported VMKSFT_BACKEND=%s\n' "${VMKSFT_BACKEND}" >&2
-		exit 1
-		;;
-	esac
-
-	if compose_service_running; then
-		printf 'docker\n'
-		return 0
-	fi
-	if native_service_running; then
-		printf 'native\n'
-		return 0
-	fi
-
-	return 1
-}
-
-run_queue_native() {
-	need_cmd python3
-	exec python3 "${HOST_QUEUE}" "$@"
-}
-
-run_queue_docker() {
+ensure_service_running() {
 	need_cmd docker
+	[[ -f "${COMPOSE_FILE}" ]] || {
+		printf 'vmksft: docker compose file not found: %s\n' "${COMPOSE_FILE}" >&2
+		exit 1
+	}
+
+	if run_compose ps --status running --services 2>/dev/null | grep -qx "${COMPOSE_SERVICE}"; then
+		return 0
+	fi
+
+	printf 'vmksft: vmksft-service is not running; start it with docker compose up -d vmksft-service\n' >&2
+	exit 1
+}
+
+run_queue() {
 	run_compose exec -T "${COMPOSE_SERVICE}" python3 "${CONTAINER_QUEUE}" "$@"
 }
 
-queue_backend_exec() {
-	local backend="$1"
+reject_unsupported_options() {
+	local command="$1"
 	shift
 
-	case "${backend}" in
-	docker)
-		run_queue_docker "$@"
-		;;
-	native)
-		run_queue_native "$@"
-		;;
-	*)
-		printf 'vmksft: unsupported backend: %s\n' "${backend}" >&2
-		exit 1
-		;;
-	esac
+	for arg in "$@"; do
+		case "${arg}" in
+		--explain|-explain)
+			printf 'vmksft: %s does not support --explain; only the long-lived Compose service workflow is supported\n' "${command}" >&2
+			exit 2
+			;;
+		esac
+	done
+}
+
+prepare_queue_submit_args() {
+	local command="$1"
+	shift
+
+	local -a rewritten=()
+	local patch_dir=""
+	local expect_patch_dir=0
+
+	PREPARED_QUEUE_ARGS=()
+	STAGED_PATCH_DIR=""
+
+	for arg in "$@"; do
+		if (( expect_patch_dir == 1 )); then
+			patch_dir="${arg}"
+			expect_patch_dir=0
+			continue
+		fi
+
+		case "${arg}" in
+		--patch-dir)
+			expect_patch_dir=1
+			;;
+		--patch-dir=*)
+			patch_dir="${arg#*=}"
+			;;
+		*)
+			rewritten+=("${arg}")
+			;;
+		esac
+	done
+
+	if (( expect_patch_dir == 1 )); then
+		printf 'vmksft: missing value for --patch-dir\n' >&2
+		exit 2
+	fi
+
+	if [[ "${command}" == "patches" && -z "${patch_dir}" ]]; then
+		printf 'vmksft: patches requires --patch-dir PATH\n' >&2
+		exit 2
+	fi
+	if [[ "${command}" != "patches" && "${command}" != "submit" && -n "${patch_dir}" ]]; then
+		printf 'vmksft: --patch-dir is only valid with patches mode\n' >&2
+		exit 2
+	fi
+
+	if [[ -n "${patch_dir}" ]]; then
+		need_cmd realpath
+		need_cmd tar
+		local patch_dir_input="${patch_dir}"
+		patch_dir="$(realpath -e -- "${patch_dir_input}")" || {
+			printf 'vmksft: patch directory not found: %s\n' "${patch_dir_input}" >&2
+			exit 1
+		}
+		[[ -d "${patch_dir}" ]] || {
+			printf 'vmksft: patch directory is not a directory: %s\n' "${patch_dir}" >&2
+			exit 1
+		}
+
+		local patch_tag="patches-$(date -u +%Y%m%d-%H%M%S)-$$-${RANDOM}"
+		local container_patch_dir="${CONTAINER_PATCH_ROOT}/${patch_tag}"
+
+		STAGED_PATCH_DIR="${container_patch_dir}"
+		run_compose exec -T "${COMPOSE_SERVICE}" mkdir -p "${CONTAINER_PATCH_ROOT}"
+		run_compose exec -T "${COMPOSE_SERVICE}" rm -rf "${container_patch_dir}"
+		run_compose exec -T "${COMPOSE_SERVICE}" mkdir -p "${container_patch_dir}"
+		if ! tar -C "${patch_dir}" -cf - . | \
+			run_compose exec -T "${COMPOSE_SERVICE}" tar -xf - -C "${container_patch_dir}"; then
+			cleanup_staged_patch_dir
+			printf 'vmksft: failed to stage patch directory into docker backend\n' >&2
+			exit 1
+		fi
+
+		patch_dir="${container_patch_dir}"
+		rewritten+=(--patch-dir "${patch_dir}")
+	fi
+
+	PREPARED_QUEUE_ARGS=("${rewritten[@]}")
+}
+
+cleanup_staged_patch_dir() {
+	[[ -n "${STAGED_PATCH_DIR}" ]] || return 0
+	run_compose exec -T "${COMPOSE_SERVICE}" rm -rf "${STAGED_PATCH_DIR}" >/dev/null 2>&1 || true
+	STAGED_PATCH_DIR=""
+}
+
+run_submit() {
+	local command="$1"
+	shift
+
+	set +e
+	if [[ -n "${command}" ]]; then
+		run_queue submit --mode "${command}" "${PREPARED_QUEUE_ARGS[@]}"
+	else
+		run_queue submit "${PREPARED_QUEUE_ARGS[@]}"
+	fi
+	local rc=$?
+	set -e
+
+	cleanup_staged_patch_dir
+	return "${rc}"
 }
 
 main() {
 	local command="${1:-}"
-	local backend
+	trap cleanup_staged_patch_dir EXIT
 
 	case "${command}" in
 	""|-h|--help|help)
 		usage
 		exit 0
 		;;
-	backend)
-		if backend="$(detect_backend)"; then
-			printf '%s\n' "${backend}"
-			exit 0
-		fi
-		printf 'vmksft: no running backend found; start docker compose or nipa-vmksft-native\n' >&2
-		exit 1
-		;;
 	committed|dirty|patches)
 		shift
-		if ! backend="$(detect_backend)"; then
-			printf 'vmksft: no running backend found; start docker compose or nipa-vmksft-native\n' >&2
-			exit 1
-		fi
-		queue_backend_exec "${backend}" submit --mode "${command}" "$@"
+		reject_unsupported_options "${command}" "$@"
+		ensure_service_running
+		prepare_queue_submit_args "${command}" "$@"
+		run_submit "${command}"
+		exit $?
 		;;
-	submit|list)
+	submit)
 		shift
-		if ! backend="$(detect_backend)"; then
-			printf 'vmksft: no running backend found; start docker compose or nipa-vmksft-native\n' >&2
-			exit 1
-		fi
-		queue_backend_exec "${backend}" "${command}" "$@"
+		reject_unsupported_options "${command}" "$@"
+		ensure_service_running
+		prepare_queue_submit_args "${command}" "$@"
+		run_submit ""
+		exit $?
+		;;
+	list)
+		shift
+		ensure_service_running
+		run_queue list "$@"
+		exit $?
 		;;
 	show|cancel)
 		shift
@@ -195,11 +261,9 @@ main() {
 			printf 'vmksft: %s requires a job id\n' "${command}" >&2
 			exit 1
 		}
-		if ! backend="$(detect_backend)"; then
-			printf 'vmksft: no running backend found; start docker compose or nipa-vmksft-native\n' >&2
-			exit 1
-		fi
-		queue_backend_exec "${backend}" "${command}" "$@"
+		ensure_service_running
+		run_queue "${command}" "$@"
+		exit $?
 		;;
 	*)
 		printf 'vmksft: unknown command: %s\n' "${command}" >&2

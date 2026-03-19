@@ -263,6 +263,11 @@ class DynamicWorkerScheduler:
         elif self._desired_workers >= self.max_workers:
             reason = "max-workers"
 
+        if self.max_workers > 0 and self._desired_workers < self.min_workers:
+            self._desired_workers = self.min_workers
+            if reason in {"target-band", "cooldown"}:
+                reason = "min-workers"
+
         self._blocked_reason = reason
         self._maybe_log_transition_locked(prev_desired)
 

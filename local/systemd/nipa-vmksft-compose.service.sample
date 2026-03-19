@@ -7,6 +7,7 @@ Wants=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=#NIPA#/local
+# Service configuration, including NIPA_VMKSFT_SKIP_TESTS, comes from #NIPA#/local/.env.
 ExecStart=/usr/bin/docker compose --env-file #NIPA#/local/.env up -d vmksft-service
 ExecStop=/usr/bin/docker compose --env-file #NIPA#/local/.env down
 TimeoutStartSec=0

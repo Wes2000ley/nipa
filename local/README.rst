@@ -1,124 +1,36 @@
 Local vmksft Harness
 ====================
 
-This directory contains local wrappers for exercising NIPA executor code paths
-without needing the full netdev cloud deployment.
+This directory contains the Docker-Compose-backed local vmksft service.
 
-The first wrapper here, ``run-vmksft-net.sh``, drives a local vmksft shim
-against a broad net-focused target set while leaving the upstream executor core
-in ``contest/remote/`` close to origin. It is a single-shot local harness
-which:
+There is one supported way to run it:
 
-- maintains a cached local testing remote and worker tree under
-  ``local/state/vmksft-net/cache/``
-- materializes dirty-tree and patch-folder snapshots under the same local cache
-  instead of writing back into the source tree
-- generates a local ``branches.json`` manifest
-- serves that manifest and the resulting JSON artifacts over HTTP on port
-  ``8888`` by default
-- keeps the HTTP server alive after completion so you can continue browsing the
-  generated pages until you stop it with ``Ctrl-C`` or ``Ctrl-Z``; pass
-  ``--exit-when-done`` to skip that manual wait
-- runs ``local/lib/local_vmksft_p.py`` with a generated config and the cached
-  worker tree
+- start the long-lived ``vmksft-service`` container
+- submit jobs through ``local/vmksft``
+- browse results from the service-owned site root under ``local/state/vmksft-net/site``
 
-This is still narrower than the full cloud matrix, but it now covers a much
-larger local netdev slice, including the main ``net`` target plus buckets such
-as ``net/af_unix``, ``net/can``, ``net/forwarding``, ``net/mptcp``,
-``net/netfilter``, ``net/openvswitch``, ``net/ovpn``, ``net/packetdrill``,
-``net/tcp_ao``, ``nci``, and the software-oriented ``drivers/net/*`` suites
-used by this harness.
+Native-host deployment, the legacy one-shot runner, and dual-backend wrapper
+behavior are not supported.
+
 
 Layout
 ------
 
 The ``local/`` tree is split by subsystem:
 
-- ``bin/`` for Python entrypoints and helper scripts
-- ``lib/`` for the reusable Python implementation modules
+- ``bin/`` for service entrypoints and helper scripts
+- ``lib/`` for reusable Python implementation code
 - ``web/`` for the local contest UI assets and templates
 - ``tests/`` for the local unit tests
-- ``docs/`` for supporting local documentation such as dependency notes
-- ``systemd/`` for sample unit files
-- ``vmksft`` as the short user-facing wrapper that auto-detects Docker vs
-  native service mode
+- ``docs/`` for supporting documentation such as dependency notes
+- ``systemd/`` for the Compose-managed systemd sample
+- ``vmksft`` as the supported user-facing submission wrapper
 
-Usage
------
 
-From the kernel tree:
+Quick Start
+-----------
 
-.. code-block:: bash
-
-  ~/nipa/local/run-vmksft-net.sh
-
-Or point it at another tree:
-
-.. code-block:: bash
-
-  ~/nipa/local/run-vmksft-net.sh --tree /path/to/linux
-
-Common knobs:
-
-- ``--mode committed|dirty|patches`` selects the source input:
-
-  - ``committed`` tests the current committed ``HEAD`` of ``--tree``
-  - ``dirty`` tests a synthetic snapshot of the current working tree, including
-    staged, unstaged, deleted, and untracked non-ignored files
-  - ``patches`` applies a directory of ``.patch`` or ``.mbox`` files on top of
-    the current committed ``HEAD``
-
-- ``--patch-dir PATH`` points ``--mode patches`` at a patch directory
-- ``--build-clean always|never|config-change`` controls whether tree changes
-  trigger a full clean rebuild, no clean rebuild, or a clean rebuild only when
-  the config inputs change
-- ``--explain`` prints the fully resolved branch/base/cache/build plan and exits
-- ``--threads N|auto`` controls the local vmksft worker cap
-- ``--cpus N|auto`` controls guest CPU count
-- ``--memory SIZE|auto`` controls guest RAM
-- ``--init-prompt PROMPT`` overrides the initial guest prompt if virtme-ng
-  differs from the default on this host
-- ``--http-port N`` changes the public port embedded in generated result URLs
-- ``--internal-http-bind HOST`` changes the bind address of the runner's
-  private manifest server
-- ``--internal-http-port N`` changes the private manifest port used by the
-  runner's built-in HTTP server
-- ``--public-host HOST`` changes the hostname or IP published in result URLs
-- ``--exit-when-done`` makes the wrapper exit after the run instead of keeping
-  the built-in HTTP server alive for manual browsing
-- ``--fresh-cache`` drops the cached remote and worker tree before the run
-
-Containerized workflow
-----------------------
-
-``local/Dockerfile`` and ``local/docker-compose.yml`` package the userspace side
-of the vmksft harness in a Fedora 44 image. The container provides the QEMU,
-``virtme-ng``, Python, and tooling stack; it does **not** replace the host
-kernel. KVM still comes from the host kernel and device access, so the host
-must support the same virtualization features that the native wrapper needs.
-
-The image intentionally matches the newer local userspace stack more closely:
-it pins ``virtme-ng 1.40``, ``patatt 0.7.0``, ``pylint 4.0.5``, and overlays
-``iproute2 6.19.0`` on top of the Fedora base packages. It also builds
-``packetdrill`` from the upstream Google repository at the current default
-branch head during image builds so the image carries the newer AccECN parser
-support instead of Fedora's older RPM, and it installs the broader net
-selftest toolchain that the current tree actually checks for:
-``packetdrill``, ``iptables``/``ip6tables``, ``nft``, ``conntrack``,
-``tcpdump``, ``arping``, ``bpftool``, ``perf``, ``openvswitch``,
-``ipvsadm``, ``mausezahn``, ``ndisc6``, ``ra6``, ``nfbpf_compile``,
-``tshark``, ``dwdump``, ``teamd``, ``ptp4l``, ``phc2sys``, and related
-helpers. ``sendip`` is not packaged in Fedora 44, but the relevant selftest
-already has a ``socat`` fallback and the image includes that path.
-
-The current image trim keeps the same test coverage and convenience tools, but
-it avoids some duplicate or broader-than-needed packages. The QEMU layer keeps
-the x86 system emulator plus the curses UI instead of the larger desktop UI
-stack, and the Python modules used by the local scripts come from the dedicated
-virtualenv rather than from duplicate Fedora RPMs.
-
-From the repo root, change into ``local/``, copy ``.env.example`` to ``.env``,
-edit the paths you want, then build and start the long-lived service:
+From the repo root:
 
 .. code-block:: bash
 
@@ -127,155 +39,104 @@ edit the paths you want, then build and start the long-lived service:
   docker compose build
   docker compose up -d vmksft-service
 
-Submit work through the queued service:
+Submit jobs through the wrapper:
 
 .. code-block:: bash
 
   ./vmksft committed
   ./vmksft dirty
-  ./vmksft patches
+  ./vmksft patches --patch-dir /path/to/series
   ./vmksft list
 
-The wrapper is the recommended user interface. It checks whether the running
-backend is the Docker Compose service or the native ``systemd`` service and
-then dispatches the queue command to the right place automatically.
+The wrapper requires the Compose service to already be running. It executes all
+queue operations inside the container and stages patch directories into the
+container before submission when needed.
 
-The longer direct Docker form still works:
 
-.. code-block:: bash
+Supported Operation
+-------------------
 
-  docker compose exec vmksft-service \
-    python3 /workspace/nipa/local/bin/vmksft_queue.py submit --mode committed
+The service executes queued jobs strictly one at a time. Each queued job runs
+in its own child process, but the only supported parent runtime is the
+long-lived ``vmksft-service`` container.
 
-  docker compose exec vmksft-service \
-    python3 /workspace/nipa/local/bin/vmksft_queue.py list
+- ``committed`` freezes the current committed ``HEAD`` of the configured kernel tree
+- ``dirty`` freezes tracked and untracked working-tree content into a synthetic snapshot
+- ``patches`` freezes the supplied ``.patch`` / ``.mbox`` directory at queue time
 
-The long-lived container serves ``local/state/vmksft-net/site`` on
-``http://localhost:8888/`` by default and executes queued jobs strictly one at
-a time.
+Queued jobs do not drift after submission. A later edit to the kernel tree,
+patch folder, or configured skip list does not change the queued payload.
 
-The legacy one-shot runner is still available as the optional Compose profile
-``legacy`` via the ``vmksft-runner`` service, but it is now for manual
-debugging rather than the default workflow.
+The service publishes a stable browse root at ``http://localhost:8888/`` by
+default. The key paths are:
 
-By default, Compose bind-mounts ``local/state/`` exactly like the native local
-workflow. If you want the artifacts somewhere else on the host, set
-``NIPA_STATE_DIR`` in ``local/.env`` to another host path; inside the container
-it is still exposed as ``/workspace/nipa/local/state`` so the NIPA paths do not
-change.
+- ``/contest.html`` for the result log
+- ``/history.json`` for generated run history
+- ``/latest/`` for the most recent run
+- ``/runs/<run-id>/`` for stable per-run URLs
+- ``/service/status.json`` and ``/service/jobs.json`` for queue status
 
-Runtime state is kept under ``local/state/vmksft-net/`` and each run gets its
-own timestamped subdirectory. The ``latest`` symlink is updated to the most
-recent run for quick inspection. The cached worker tree keeps kernel build
-artifacts between runs, and the local NIPA fork reuses that build when the
-worker tree is still at the same file tree with the same config inputs. This is
-important for the ``dirty`` and ``patches`` modes, because they create
-synthetic commits under ``local/state/``; identical reruns still hit the same
-tree-based cache key. The default local policy is ``config-change``, which lets
-ordinary source edits use incremental ``vng --build`` rebuilds and only forces
-``make mrproper`` when the config inputs change. Use ``--build-clean always`` if
-you want the stricter CI-style clean build behavior on every tree change.
 
-The queue service keeps its own control files under
-``local/state/vmksft-net/service/``. The important subdirectories are:
+Runtime State
+-------------
 
-- ``jobs/<job-id>/`` for frozen source snapshots plus immutable job metadata
-- ``queue/`` for queued job pointers
-- ``running/``, ``complete/``, ``failed/``, and ``cancelled/`` for state
-  transitions
+All service state lives under ``local/state/vmksft-net/`` by default.
 
-Queued jobs freeze their source input at submission time. ``committed`` jobs
-capture the exact current HEAD, ``dirty`` jobs capture the working tree plus
-untracked files into a synthetic committed snapshot, and ``patches`` jobs copy
-and apply the current patch directory into a frozen snapshot. This means queued
-jobs do not drift if the source tree or patch directory changes before they run.
+Important subdirectories:
 
-On larger hosts the default resource sizing is intentionally aggressive. The
-wrapper auto-sizes guest CPU count and guest RAM, and it derives the automatic
-worker cap from host memory rather than from a fixed CPU formula. The local
-executor now follows the upstream ``vmksft-p`` thread-start behavior much more
-closely: it does the same up-front selftests build, then starts worker VMs with
-the same load-wait hook and per-test ``make ... TEST_PROGS=... run_tests``
-launcher shape as the remote executor. The local dynamic scheduler still stays
-in place on top of that to manage host pressure; it governs when workers are
-admitted or recycled locally, but it does not change the individual test/build
-commands. Override the auto values explicitly if you want a smaller or larger
-footprint.
+- ``service/jobs/<job-id>/`` stores frozen job snapshots and metadata
+- ``service/queue/`` stores queued job pointers
+- ``service/running/``, ``service/complete/``, ``service/failed/``, and ``service/cancelled/`` track job state
+- ``cache/worker-tree/`` holds the reusable worker checkout and build cache
+- ``cache/test-runtime.json`` stores observed per-test runtimes for future queue ordering
+- ``runs/<run-id>/`` holds run-scoped logs, config, and published web artifacts
+- ``site/`` is the stable docroot served by the Compose service
 
-After the executor starts, the wrapper serves a stable site root under
-``local/state/vmksft-net/site/`` instead of exposing only the current run's
-``www/`` tree. The site root has:
+The worker tree cache is reused across jobs. Kernel build reuse remains keyed
+on the checked-out tree object plus config inputs and GCOV state, so unchanged
+trees can skip rebuilding while changed trees continue to use incremental
+``vng --build`` behavior under the default ``config-change`` policy.
+The executor also keeps a small runtime history cache and uses it to front-load
+longer tests in later runs. Cached runtimes under 10 seconds are treated as
+effectively equal so short tests keep their natural order.
 
-- ``/contest.html`` as the main local result log using the shared contest UI
-- ``/index.html`` as a redirect to ``/contest.html``
-- ``/history.json`` as the generated run history metadata
-- ``/contest/all-results.json`` and ``/contest/filters.json`` as the local
-  contest UI data sources
-- ``/latest/`` as a symlink to the most recent run
-- ``/runs/<run-id>/`` as stable URLs for prior runs
-- ``/service/status.json`` and ``/service/jobs.json`` as the long-lived queue
-  status endpoints
 
-Each run keeps its own redirecting dashboard at ``/runs/<run-id>/index.html``.
-That URL lands in the shared contest log with the run's branch preselected.
-The rendered final summary URL at ``/runs/<run-id>/vmksft-net-local/summary.html``
-also redirects back to the same run-scoped contest view, while ``summary.json``
-continues to expose the structured final totals and metadata.
+Resource Model
+--------------
 
-The Python summary builder still writes ``summary.json`` from the executor's
-final detail JSON, but the HTML side is now just a redirect shell rather than a
-separate local summary UI.
+The Compose service auto-sizes the local executor conservatively for the host:
 
-The wrapper uses a small custom local HTTP server so the raw extensionless log
-files under ``results/`` are served as inline text instead of being treated as
-downloads by the browser.
+- guest CPU count defaults to ``2``
+- guest memory defaults to ``2G``
+- worker count is derived from host memory unless explicitly overridden at submit time
 
-Systemd samples
----------------
+The local executor follows the upstream ``vmksft-p`` per-test launcher shape
+and keeps the dynamic host-pressure scheduler on top of that for worker
+admission and VM recycling.
 
-Two sample unit files live under ``local/systemd/``:
 
-- ``nipa-vmksft-compose.service.sample`` manages the Docker Compose service
-- ``nipa-vmksft-native.service.sample`` runs the same long-lived daemon
-  directly on the host
+Systemd
+-------
 
-Both samples expect you to replace ``#NIPA#`` with the absolute repo path. The
-native sample also expects ``#USER#`` to be replaced with the account that owns
-the repo and the state directory. Both use ``local/.env`` as the shared config
-source. Native submissions can use either the same short wrapper or the direct
-queue CLI:
+If you want systemd to keep the supported Compose service running, use:
 
-.. code-block:: bash
+- ``local/systemd/nipa-vmksft-compose.service.sample``
 
-  ~/nipa/local/vmksft dirty
-  python3 ~/nipa/local/bin/vmksft_queue.py submit --mode dirty
+Replace ``#NIPA#`` with the absolute repo path, then enable the resulting unit.
+
 
 Notes
 -----
 
-- The wrapper intentionally runs the local vmksft shim from a non-git working
-  directory. This avoids an odd branch lookup shortcut in NIPA's fetcher and
-  forces the executor to resolve the branch from the worker clone's remotes.
-- The one-shot wrapper now accepts any absolute ``--state-dir``. The long-lived
-  service still keeps all of its writable data under the configured
-  ``NIPA_STATE_DIR`` parent.
-- The default initial prompt is ``#`` on purpose. The guest prompt seen before
-  NIPA resets ``PS1`` includes a dynamic hostname and working directory, so a
-  suffix match is more robust than hardcoding the full prompt string.
-- The HTTP server listens on all interfaces so other machines can browse the
-  generated results. The executor still fetches the manifest locally via
-  ``127.0.0.1`` to avoid depending on external name resolution.
-- The runner still starts a built-in HTTP server during execution so the
-  fetcher can consume ``branches.json`` locally. Under the long-lived service
-  that server is private to the job and uses a loopback-only port chosen by the
-  daemon, while the daemon itself owns the stable public browse port.
-- The worker tree cache is there to avoid unnecessary rebuilds on reruns. Use
-  ``--fresh-cache`` if the cache gets wedged or you want to force a fully clean
-  local reproduction.
-- ``--mode patches`` accepts both mail-style ``git format-patch`` output and
-  plain diff-style ``.patch`` files. Non-diff files, such as a cover letter,
-  are skipped.
-- Generated runtime state is ignored by git via ``local/state/`` in the repo
-  root ``.gitignore``.
-- Host and userspace prerequisites are listed in
-  ``local/docs/VMKSFT_DEPENDENCIES.rst``.
+- The container provides the userland stack. The host still needs working KVM
+  and the same virtualization support the tests depend on.
+- ``NIPA_KERNEL_TREE`` in ``local/.env`` must point at the kernel checkout the
+  service will snapshot from.
+- ``NIPA_STATE_DIR`` in ``local/.env`` may be changed if you want the state on
+  a different host path.
+- The public HTTP port and published host come from ``NIPA_WEB_PORT`` and
+  ``NIPA_PUBLIC_HOST``.
+- ``NIPA_VMKSFT_SKIP_TESTS`` may contain a whitespace/comma-separated list of
+  test names to suppress from every queued job. The value is frozen into each
+  job at submission time.
+- The supported user path is ``local/vmksft``.

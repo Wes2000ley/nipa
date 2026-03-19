@@ -8,7 +8,6 @@ import fcntl
 import json
 import os
 import shutil
-import socket
 import subprocess
 import uuid
 
@@ -28,13 +27,11 @@ DEFAULT_WEB_PORT = 8888
 @dataclasses.dataclass(frozen=True)
 class RuntimeConfig:
     script_dir: Path
-    repo_root: Path
     kernel_tree: Path
-    state_dir: Path
     harness_state_dir: Path
-    patch_dir: Path
     public_host: str
     web_port: int
+    skip_tests: str
 
     @property
     def site_root(self):
@@ -86,6 +83,7 @@ class JobOptions:
     memory: str = DEFAULT_MEMORY
     init_prompt: str = DEFAULT_INIT_PROMPT
     fresh_cache: bool = False
+    patch_dir: str = ""
 
 
 def utc_now():
@@ -135,24 +133,21 @@ def find_local_root(script_path):
 def load_runtime_config(script_path):
     script_dir = find_local_root(script_path)
     load_local_env(script_dir)
-    repo_root = script_dir.parent
 
     kernel_tree = resolve_path(os.environ.get("NIPA_KERNEL_TREE", "/tmp/nipa-missing-kernel-tree"),
                                script_dir)
-    state_dir = resolve_path(os.environ.get("NIPA_STATE_DIR", "./state"), script_dir)
-    patch_dir = resolve_path(os.environ.get("NIPA_PATCH_DIR", "./patches"), script_dir)
+    state_root = resolve_path(os.environ.get("NIPA_STATE_DIR", "./state"), script_dir)
     public_host = os.environ.get("NIPA_PUBLIC_HOST", "localhost")
     web_port = int(os.environ.get("NIPA_WEB_PORT", DEFAULT_WEB_PORT))
+    skip_tests = os.environ.get("NIPA_VMKSFT_SKIP_TESTS", "").strip()
 
     return RuntimeConfig(
         script_dir=script_dir,
-        repo_root=repo_root,
         kernel_tree=kernel_tree,
-        state_dir=state_dir,
-        harness_state_dir=state_dir / "vmksft-net",
-        patch_dir=patch_dir,
+        harness_state_dir=state_root / "vmksft-net",
         public_host=public_host,
         web_port=web_port,
+        skip_tests=skip_tests,
     )
 
 
@@ -222,7 +217,8 @@ def _run(cmd, cwd=None, input_text=None, capture_output=False):
 
 def _maybe_clone_local(source, destination):
     try:
-        _run(["git", "clone", "--local", "--quiet", str(source), str(destination)])
+        _run(["git", "clone", "--local", "--quiet", str(source), str(destination)],
+             capture_output=True)
     except subprocess.CalledProcessError:
         _run(["git", "clone", "--quiet", str(source), str(destination)])
 
@@ -295,7 +291,8 @@ def copy_untracked_files(src_root, dst_root):
 
 def patch_has_diff(path):
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith("diff --git ") or line == "---" or line.startswith("Index: "):
+        if (line.startswith("diff --git ") or line.startswith("--- ") or
+                line.startswith("+++ ") or line.startswith("Index: ")):
             return True
     return False
 
@@ -335,6 +332,8 @@ def apply_patch_series(repo, patch_dir):
                     "git", "-C", str(repo),
                     "-c", "commit.gpgSign=false",
                     "-c", "core.hooksPath=/dev/null",
+                    "-c", "user.name=local-vmksft",
+                    "-c", "user.email=local-vmksft@nipa.local",
                     "am", "--quiet", "-3", "--keep-cr", "--whitespace=nowarn", str(patch),
                 ])
             except subprocess.CalledProcessError:
@@ -490,8 +489,17 @@ def enqueue_job(config, options):
         raise FileNotFoundError(f"kernel tree not found: {config.kernel_tree}")
     if not (config.kernel_tree / "tools/testing/selftests/net").is_dir():
         raise FileNotFoundError(f"tree does not look like a kernel checkout: {config.kernel_tree}")
-    if options.mode == "patches" and not config.patch_dir.is_dir():
-        raise FileNotFoundError(f"patch directory not found: {config.patch_dir}")
+
+    patch_dir = None
+    if options.patch_dir:
+        patch_dir = resolve_path(options.patch_dir, Path.cwd())
+    if options.mode == "patches":
+        if patch_dir is None:
+            raise ValueError("--patch-dir is required for patches mode")
+        if not patch_dir.is_dir():
+            raise FileNotFoundError(f"patch directory not found: {patch_dir}")
+    elif patch_dir is not None:
+        raise ValueError("--patch-dir is only valid with patches mode")
 
     job_id = generate_job_id()
     job_dir = _job_dir(config, job_id)
@@ -513,7 +521,7 @@ def enqueue_job(config, options):
                 job_dir, config.kernel_tree, source_head)
         elif options.mode == "patches":
             snapshot_tree, snapshot_head, patch_count = _prepare_patches_snapshot(
-                job_dir, config.kernel_tree, config.patch_dir, source_head)
+                job_dir, config.kernel_tree, patch_dir, source_head)
         else:
             raise ValueError(f"unsupported mode: {options.mode}")
     except Exception:
@@ -532,8 +540,9 @@ def enqueue_job(config, options):
         "source_base": source_base,
         "snapshot_tree": str(snapshot_tree),
         "snapshot_head": snapshot_head,
-        "patch_dir": str(config.patch_dir),
+        "patch_dir": str(patch_dir) if patch_dir is not None else "",
         "patch_count": patch_count,
+        "skip_tests": config.skip_tests,
         "options": dataclasses.asdict(options),
     }
     state_data = {
@@ -573,7 +582,7 @@ def next_queued_job(config):
             "running",
             queue_entry=entry.name,
             started_at=started_at,
-            detail="starting runner",
+            detail="starting job process",
         )
         _sync_job_links(config, job_id, "running")
         record = load_job_record(config, job_id)
@@ -583,7 +592,7 @@ def next_queued_job(config):
 
 def set_job_runner_pid(config, job_id, pid):
     with state_lock(config):
-        return update_job_state(config, job_id, "running", runner_pid=pid, detail="runner active")
+        return update_job_state(config, job_id, "running", runner_pid=pid, detail="job process active")
 
 
 def discover_run_for_job(config, job_id):
@@ -674,37 +683,6 @@ def time_ns():
 
 def time_now_ns():
     return int(utc_now().timestamp() * 1_000_000_000)
-
-
-def find_free_tcp_port(bind="127.0.0.1"):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((bind, 0))
-        return sock.getsockname()[1]
-
-
-def build_runner_command(config, job_record, internal_http_port):
-    options = job_record.get("options", {})
-    command = [
-        str(config.script_dir / "run-vmksft-net.sh"),
-        "--tree", job_record["snapshot_tree"],
-        "--state-dir", str(config.harness_state_dir),
-        "--mode", "committed",
-        "--build-clean", options.get("build_clean", DEFAULT_BUILD_CLEAN),
-        "--threads", options.get("threads", DEFAULT_THREADS),
-        "--cpus", options.get("cpus", DEFAULT_CPUS),
-        "--memory", options.get("memory", DEFAULT_MEMORY),
-        "--init-prompt", options.get("init_prompt", DEFAULT_INIT_PROMPT),
-        "--http-port", str(config.web_port),
-        "--public-host", config.public_host,
-        "--internal-http-bind", "127.0.0.1",
-        "--internal-http-port", str(internal_http_port),
-        "--job-meta", str(_job_json_path(config, job_record["job_id"])),
-        "--exit-when-done",
-    ]
-    if options.get("fresh_cache"):
-        command.append("--fresh-cache")
-    return command
 
 
 def _job_public_record(record):

@@ -17,7 +17,8 @@ environment currently being used locally.
 Base Harness Requirements
 -------------------------
 
-These are required by the local wrapper itself:
+These are required by the Docker Compose service and its per-job execution
+path:
 
 - ``bash``
 - ``git``
@@ -30,12 +31,11 @@ These are required by the local wrapper itself:
 - ``qemu-utils``
 - ``virtiofsd`` is strongly recommended
 
-The wrapper checks some of these directly in
-``local/run-vmksft-net.sh`` and will refuse to start without them.
+The service-side job execution path checks the critical toolchain directly and
+will fail the queued job early if they are missing.
 
 Python modules used by the local and shared executor code:
 
-- ``python3-requests``
 - ``python3-psutil``
 
 Recommended install:
@@ -43,7 +43,7 @@ Recommended install:
 .. code-block:: bash
 
   sudo apt install \
-    git python3 python3-requests python3-psutil \
+    git python3 python3-psutil \
     make rsync qemu-system-x86 qemu-utils virtiofsd
 
 ``virtme-ng`` is commonly installed via pip locally:
@@ -57,7 +57,7 @@ Kernel And Selftest Build Requirements
 --------------------------------------
 
 These are the base packages you want for building the kernel and the kselftest
-target set used by ``run-vmksft-net.sh``:
+target set used by the local vmksft service:
 
 - ``gcc``
 - ``bc``
@@ -257,7 +257,7 @@ If you want one baseline install command for the local harness, start here:
     iputils-arping iptables nftables conntrack tcpdump traceroute bpftool \
     linux-perf ipvsadm openvswitch-switch psmisc kmod libcap-dev libelf-dev \
     libnuma-dev libssl-dev make netcat-openbsd ndisc6 netsniff-ng \
-    packetdrill pahole python3 python3-psutil python3-requests python3-yaml \
+    packetdrill pahole python3 python3-psutil python3-yaml \
     qemu-system-x86 qemu-utils rsync socat teamd tshark virtiofsd
 
 Then add any distro-specific extras you care about, such as ``ra6``,

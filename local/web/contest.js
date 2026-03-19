@@ -1,15 +1,69 @@
-function colorify_str(value)
+function result_color(value)
 {
     if (value == "pass") {
-	ret = '<span style="color:green">';
+	return "green";
     } else if (value == "skip") {
-	ret = '<span style="color:#809fff">';
+	return "#809fff";
     } else if (value == "warn") {
-	ret = '<span style="color:#d99a00">';
-    } else {
-	ret = '<span style="color:red">';
+	return "#d99a00";
     }
-    return ret + value + '</span>';
+    return "red";
+}
+
+function set_text_cell(cell, value)
+{
+    cell.textContent = value ?? "";
+}
+
+function set_strong_text_cell(cell, value)
+{
+    const strong = document.createElement("b");
+    strong.textContent = value ?? "";
+    cell.replaceChildren(strong);
+}
+
+function set_result_cell(cell, value)
+{
+    if (!value) {
+	cell.textContent = "";
+	return;
+    }
+
+    const span = document.createElement("span");
+    span.style.color = result_color(value);
+    span.textContent = value;
+    cell.replaceChildren(span);
+}
+
+function safe_href(value)
+{
+    if (!value)
+	return "#";
+
+    const href = String(value).trim();
+    if (!href)
+	return "#";
+    if (href.startsWith("/") || href.startsWith("./") || href.startsWith("../") ||
+	href.startsWith("?") || href.startsWith("#")) {
+	return href;
+    }
+
+    try {
+	const parsed = new URL(href, window.location.href);
+	if (parsed.protocol == "http:" || parsed.protocol == "https:")
+	    return parsed.toString();
+    } catch (_err) {
+    }
+
+    return "#";
+}
+
+function set_link_cell(cell, href, label)
+{
+    const link = document.createElement("a");
+    link.href = safe_href(href);
+    link.textContent = label;
+    cell.replaceChildren(link);
 }
 
 function sort_results(rows)
@@ -33,7 +87,12 @@ function sort_results(rows)
 	    });
 	} else {
 	    rows.sort(function(a, b) {
-		return sort_ord * (b.r[sort_key] < a.r[sort_key] ? 1 : -1);
+		const left = a.r[sort_key] || "";
+		const right = b.r[sort_key] || "";
+
+		if (left == right)
+		    return 0;
+		return sort_ord * (right < left ? 1 : -1);
 	    });
 	}
     }
@@ -140,20 +199,20 @@ function load_result_table(data_raw)
 	const branch_url = branch_urls[v.branch] || v.branch_url || "#";
 	const run_url = v.branch_url || branch_url || "#";
 
-	date.innerHTML = v.end.toLocaleString();
-	branch.innerHTML = "<a href=\"" + branch_url + "\">" + v.branch + "</a>";
-	remote.innerHTML = v.remote;
-	exe.innerHTML = v.executor;
-	group.innerHTML = r.group;
-	test.innerHTML = "<b>" + r.test + "</b>";
+	set_text_cell(date, v.end.toLocaleString());
+	set_link_cell(branch, branch_url, v.branch);
+	set_text_cell(remote, v.remote);
+	set_text_cell(exe, v.executor);
+	set_text_cell(group, r.group);
+	set_strong_text_cell(test, r.test);
 	if ("retry" in r)
-	    retry.innerHTML = colorify_str(r.retry);
+	    set_result_cell(retry, r.retry);
 	if ("time" in r)
-	    time.innerHTML = nipa_msec_to_str(r.time * 1000);
-	res.innerHTML = colorify_str(r.result);
-	outputs.innerHTML = "<a href=\"" + r.link + "\">outputs</a>";
-	hist.innerHTML = "<a href=\"contest.html?test=" + encodeURIComponent(r.test) + form + "\">history</a>";
-	run.innerHTML = "<a href=\"" + run_url + "\">run</a>";
+	    set_text_cell(time, nipa_msec_to_str(r.time * 1000));
+	set_result_cell(res, r.result);
+	set_link_cell(outputs, r.link, "outputs");
+	set_link_cell(hist, "contest.html?test=" + encodeURIComponent(r.test) + form, "history");
+	set_link_cell(run, run_url, "run");
     }
 }
 
@@ -621,6 +680,9 @@ function embedded_mode() {
 
 function do_it()
 {
+    nipa_load_sitemap();
+    nipa_load_sponsors();
+
     const urlParams = new URLSearchParams(window.location.search);
 
     if (urlParams.get("embed") === "1") {

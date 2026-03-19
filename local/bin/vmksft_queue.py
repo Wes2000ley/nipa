@@ -25,6 +25,7 @@ from vmksft_service_lib import (
     iter_job_records,
     load_job_record,
     load_runtime_config,
+    write_public_status,
 )
 
 
@@ -43,6 +44,8 @@ def parse_args():
     submit.add_argument("--memory", default=DEFAULT_MEMORY)
     submit.add_argument("--init-prompt", default=DEFAULT_INIT_PROMPT)
     submit.add_argument("--fresh-cache", action="store_true")
+    submit.add_argument("--patch-dir",
+                        help="Directory of .patch/.mbox files to freeze for --mode patches")
 
     subparsers.add_parser("list", help="List known jobs")
 
@@ -64,6 +67,7 @@ def build_options(args):
         memory=args.memory,
         init_prompt=args.init_prompt,
         fresh_cache=bool(args.fresh_cache),
+        patch_dir=args.patch_dir or "",
     )
 
 
@@ -73,6 +77,7 @@ def print_job_json(record):
 
 def handle_submit(config, args):
     record = enqueue_job(config, build_options(args))
+    write_public_status(config)
     state = record.get("state", {})
     print(f"queued {record['job_id']} status={state.get('status')} mode={record['requested_mode']}")
     print_job_json(record)
@@ -103,6 +108,7 @@ def handle_show(config, job_id):
 
 def handle_cancel(config, job_id):
     if cancel_queued_job(config, job_id):
+        write_public_status(config)
         print(f"cancelled {job_id}")
         return 0
     print(f"job is not queued: {job_id}", file=sys.stderr)

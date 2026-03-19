@@ -40,7 +40,7 @@ def parse_args():
                         help="Link to the manifest JSON from the rendered page")
     parser.add_argument("--executor-log-url", required=True,
                         help="Link to the executor log from the rendered page")
-    parser.add_argument("--http-log-url", required=True,
+    parser.add_argument("--http-log-url", default="",
                         help="Link to the HTTP server log from the rendered page")
     parser.add_argument("--dashboard-url", required=True,
                         help="Link back to the live dashboard page")

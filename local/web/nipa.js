@@ -11,11 +11,11 @@ function nipa_msec_to_str(msec) {
     if (msec <= 0)
 	return msec.toString();
 
-    for (i = 0; i < convs.length; i++) {
+    for (let i = 0; i < convs.length; i++) {
         if (msec < convs[i][0]) {
-            var full = Math.floor(msec) + convs[i - 1][1];
+            let full = Math.floor(msec) + convs[i - 1][1];
             if (i > 1) {
-                var frac = Math.round(msec * convs[i - 1][0] % convs[i - 1][0]);
+                const frac = Math.round(msec * convs[i - 1][0] % convs[i - 1][0]);
                 if (frac)
                     full += " " + frac + convs[i - 2][1];
             }
@@ -40,7 +40,7 @@ function nipa_test_fullname(v, r)
 function __nipa_filters_set(update_cb, set_name, enabled)
 {
     if (set_name.constructor === Array) {
-	for (name of set_name)
+	for (const name of set_name)
 	    __nipa_filters_set(update_cb, name, enabled);
 	return;
     }
@@ -87,12 +87,18 @@ function nipa_input_set_from_url(name)
 	    else if (url_val == "1")
 		elem.checked = true;
 	} else if (elem.type == "select-one") {
-	    let option = elem.querySelector('[value="' + url_val + '"]');
+	    let option = null;
+	    for (const candidate of elem.options) {
+		if (candidate.value == url_val) {
+		    option = candidate;
+		    break;
+		}
+	    }
 
 	    if (!option) {
 		const opt = document.createElement('option');
 		opt.value = url_val;
-		opt.innerHTML = url_val;
+		opt.textContent = url_val;
 		opt.setAttribute("style", "display: none;");
 		elem.appendChild(opt);
 	    }
@@ -112,7 +118,7 @@ function nipa_select_add_option(select_elem, show_str, value)
 {
     const opt = document.createElement('option');
     opt.value = value;
-    opt.innerHTML = show_str;
+    opt.textContent = show_str;
     select_elem.appendChild(opt);
 }
 
@@ -171,8 +177,7 @@ function nipa_load_sitemap()
       <nav>
         <img src="/favicon-contest.png" style="height: 1em;"> <a href="/contest.html">Result log</a> |
         <img src="/favicon-status.png" style="height: 1em;"> <a href="/latest/index.html">Latest run</a> |
-        <img src="/favicon-flakes.png" style="height: 1em;"> <a href="/history.json">Run history</a> |
-        <img src="/favicon-nic.png" style="height: 1em;"> <a href="/contest/branches.json">Branches</a>
+        <img src="/favicon-flakes.png" style="height: 1em;"> <a href="/history.json">Run history</a>
       </nav>
     `;
 }

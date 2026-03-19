@@ -166,11 +166,10 @@ RUN python3 -m venv "${VIRTUAL_ENV}" \
         "pylint==${PYLINT_VERSION}" \
         "ruff==${RUFF_VERSION}" \
         "jsonschema" \
-        "requests" \
         "psutil" \
         "PyYAML" \
     && git config --system --add safe.directory '*'
 
-WORKDIR /workspace/nipa/local
+WORKDIR /workspace/local
 
 CMD ["/bin/bash"]

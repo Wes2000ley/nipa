@@ -5,35 +5,8 @@ import json
 import os
 import re
 import subprocess
-import sys
-import unicodedata
-from pathlib import Path
 
-
-LOCAL_DIR = Path(__file__).resolve().parent
-LOCAL_ROOT = LOCAL_DIR.parent
-NIPA_ROOT = LOCAL_ROOT.parent
-REMOTE_DIR = NIPA_ROOT / "contest" / "remote"
-if str(REMOTE_DIR) not in sys.path:
-    sys.path.insert(0, str(REMOTE_DIR))
-
-import lib.vm as upstream_vm
-from lib.vm import VM
-
-
-def decode_and_filter(buf):
-    # Strip the full bracketed-paste toggle sequence before decoding so the
-    # trailing "h"/"l" byte does not leak into prompt or retcode parsing.
-    buf = re.sub(rb'\x1b\[\?2004[hl]', b'', buf)
-
-    buf = buf.decode("utf-8", "ignore")
-    buf = re.sub(r'\[\?2004[hl]', '', buf)
-    return "".join(
-        [x for x in buf if (x in ['\n'] or unicodedata.category(x)[0] != "C")]
-    )
-
-
-upstream_vm.decode_and_filter = decode_and_filter
+from vm_base import VMBase
 
 
 RETCODE_MARKER = "__NIPA_PREV_RC__"
@@ -53,7 +26,7 @@ def parse_bash_prev_retcode_output(stdout):
     raise ValueError(f"unable to parse shell return code from stdout: {stdout!r}")
 
 
-class LocalVM(VM):
+class LocalVM(VMBase):
     def _build_state_path(self):
         return os.path.join(self.tree_path, '.nipa-cache', 'vng-build.json')
 

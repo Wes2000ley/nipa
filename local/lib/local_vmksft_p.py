@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 
+import configparser
 import datetime
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -14,22 +16,10 @@ import time
 import traceback
 from pathlib import Path
 
-
-LOCAL_DIR = Path(__file__).resolve().parent
-LOCAL_ROOT = LOCAL_DIR.parent
-NIPA_ROOT = LOCAL_ROOT.parent
-REMOTE_DIR = NIPA_ROOT / "contest" / "remote"
-if str(REMOTE_DIR) not in sys.path:
-    sys.path.insert(0, str(REMOTE_DIR))
-
-from core import NipaLifetime
-from lib import CbArg
-from lib import Fetcher, namify
-from lib import wait_loadavg
-from lib import guess_indicators, parse_nested_tests, result_from_indicators
-
 from host_scheduler import DynamicWorkerScheduler, size_to_mib
 from local_vm import LocalVM, new_local_vm
+from naming import namify
+from results import guess_indicators, parse_nested_tests, result_from_indicators
 
 
 def build_test_command(test_path, target, prog):
@@ -51,6 +41,189 @@ def get_prog_list(vm, targets, test_path):
         targets = fp.readlines()
     vm.tree_cmd("rm -rf " + tmpdir)
     return [(e.split(":")[0].strip(), e.split(":")[1].strip()) for e in targets]
+
+
+def parse_skip_tests(value):
+    if not value:
+        return set()
+    return {item for item in re.split(r'[\s,]+', value.strip()) if item}
+
+
+def filter_prog_list(progs, skip_tests):
+    if not skip_tests:
+        return progs, []
+
+    kept = []
+    skipped = []
+    for target, prog in progs:
+        prog_name = prog.strip()
+        prog_namified = namify(prog_name)
+        target_prog = f"{target}:{prog_name}"
+        target_namified = f"{target}:{prog_namified}"
+        if (prog_name in skip_tests or prog_namified in skip_tests or
+                target_prog in skip_tests or target_namified in skip_tests):
+            skipped.append((target, prog_name))
+            continue
+        kept.append((target, prog_name))
+    return kept, skipped
+
+
+def runtime_history_key(target, prog):
+    return f"{target}:{prog.strip()}"
+
+
+def load_runtime_history(path):
+    if not path:
+        return {}
+
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+    records = payload.get("tests", payload)
+    if not isinstance(records, dict):
+        return {}
+
+    history = {}
+    for key, value in records.items():
+        if not isinstance(key, str):
+            continue
+        try:
+            runtime = float(value)
+        except (TypeError, ValueError):
+            continue
+        if runtime < 0:
+            continue
+        history[key] = runtime
+    return history
+
+
+def save_runtime_history(path, history):
+    if not path:
+        return
+
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp_path = path + ".tmp"
+    payload = {
+        "version": 1,
+        "tests": dict(sorted(history.items())),
+    }
+    with open(tmp_path, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, indent=2, sort_keys=True)
+    os.replace(tmp_path, path)
+
+
+def sort_progs_by_runtime_history(progs, history, cutoff_sec):
+    threshold = max(0.0, float(cutoff_sec))
+
+    def score(item):
+        runtime = history.get(runtime_history_key(item[0], item[1]), 0.0)
+        if runtime < threshold:
+            return 0.0
+        return runtime
+
+    return sorted(progs, key=score, reverse=True)
+
+
+def update_runtime_history(history, test_runs):
+    updated = dict(history)
+    for result in test_runs:
+        if "target" not in result or "prog" not in result:
+            continue
+        runtime = result.get("runtime_time", result.get("time"))
+        if runtime is None:
+            continue
+        try:
+            updated[runtime_history_key(result["target"], result["prog"])] = float(runtime)
+        except (TypeError, ValueError):
+            continue
+    return updated
+
+
+def load_run_info(config):
+    branch = config.get('run', 'branch', fallback='local-vmksft-net')
+    branch_date = config.get('run', 'branch_date', fallback=None)
+    if not branch_date:
+        branch_date = str(datetime.datetime.now(datetime.UTC))
+    return {
+        'branch': branch,
+        'date': branch_date,
+    }
+
+
+def write_run_results(config, binfo, results, rinfo):
+    results_root = os.path.join(config.get('local', 'base_path'), config.get('local', 'json_path'))
+    os.makedirs(results_root, exist_ok=True)
+
+    start = rinfo['start']
+    end = datetime.datetime.now(datetime.UTC)
+    file_name = f"results-{rinfo['run-cookie']}.json"
+    entry = {
+        'executor': config.get('executor', 'name'),
+        'branch': binfo['branch'],
+        'start': str(start),
+        'end': str(end),
+        'results': results,
+    }
+    if 'link' in rinfo:
+        entry['link'] = rinfo['link']
+    if 'device' in rinfo:
+        entry['device'] = rinfo['device']
+
+    with open(os.path.join(results_root, file_name), "w", encoding="utf-8") as fp:
+        json.dump(entry, fp)
+
+    manifest_path = os.path.join(results_root, "results.json")
+    url = config.get('www', 'url') + '/' + config.get('local', 'json_path') + '/' + file_name
+    with open(manifest_path, "w", encoding="utf-8") as fp:
+        json.dump([{
+            'url': url,
+            'branch': binfo['branch'],
+            'executor': config.get('executor', 'name'),
+        }], fp)
+
+
+def load_executor_config(cfg_paths):
+    config = configparser.ConfigParser()
+    config.read(normalize_cfg_paths(cfg_paths))
+    return config
+
+
+def run_local_once(config):
+    binfo = load_run_info(config)
+    start = datetime.datetime.now(datetime.UTC)
+    rinfo = {
+        'run-cookie': str(int(start.timestamp() / 60) % 1000000),
+        'start': start,
+    }
+    results = run_suite(binfo, rinfo, config)
+    write_run_results(config, binfo, results, rinfo)
+    return results
+
+
+def normalize_cfg_paths(cfg_paths):
+    if isinstance(cfg_paths, (str, os.PathLike)):
+        normalized = [str(cfg_paths)]
+    else:
+        normalized = [str(path) for path in (cfg_paths or [])]
+
+    if not normalized:
+        raise ValueError("run_executor requires at least one explicit config path")
+
+    for path in normalized:
+        if not Path(path).is_file():
+            raise FileNotFoundError(f"executor config not found: {path}")
+    return normalized
+
+
+def run_executor(cfg_paths):
+    return run_local_once(load_executor_config(cfg_paths))
 
 
 def _live_status_write(path, state):
@@ -204,10 +377,13 @@ def _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
             if is_retry:
                 outcome = work_item
                 outcome['retry'] = result
+                outcome['runtime_time'] = (t2 - t1).total_seconds()
             else:
                 outcome = {'tid': test_id, 'prog': prog, 'target': target,
                            'test': test_name, 'file_name': file_name,
-                           'result': result, 'time': (t2 - t1).total_seconds()}
+                           'result': result,
+                           'time': (t2 - t1).total_seconds(),
+                           'runtime_time': (t2 - t1).total_seconds()}
                 if crashes:
                     outcome['crashes'] = crashes
 
@@ -236,6 +412,11 @@ def _vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
                     if result == 'pass':
                         result = 'fail'
                         can_retry = False  # Don't waste time, the test is buggy
+
+            if is_retry:
+                outcome['retry'] = result
+            else:
+                outcome['result'] = result
 
             if can_retry and result == 'fail':
                 if live_status_path and live_lock and live_state:
@@ -304,12 +485,8 @@ def vm_thread(config, results_path, thr_id, hard_stop, in_queue, out_queue,
         raise
 
 
-def test(binfo, rinfo, cbarg):
+def run_suite(binfo, rinfo, config):
     print("Run at", datetime.datetime.now())
-    if not hasattr(cbarg, "prev_runtime"):
-        cbarg.prev_runtime = dict()
-    cbarg.refresh_config()
-    config = cbarg.config
 
     results_path = os.path.join(config.get('local', 'base_path'),
                                 config.get('local', 'results_path'),
@@ -363,9 +540,14 @@ def test(binfo, rinfo, cbarg):
             kconfs.append(conf)
     build_ok &= vm.build(kconfs)
 
-    shutil.copy(os.path.join(config.get('local', 'tree_path'), '.config'),
-                results_path + '/config')
-    vm.tree_cmd("make headers")
+    config_copy_src = os.path.join(config.get('local', 'tree_path'), '.config')
+    if os.path.exists(config_copy_src):
+        shutil.copy(config_copy_src, results_path + '/config')
+    else:
+        build_ok = False
+
+    headers_ret = vm.tree_cmd("make headers")
+    build_ok &= headers_ret == 0
     ret = vm.tree_cmd(["make", "-C", test_path,
                        "TARGETS=" + " ".join(targets)])
     build_ok &= ret == 0
@@ -385,7 +567,15 @@ def test(binfo, rinfo, cbarg):
         }]
 
     progs = get_prog_list(vm, targets, test_path)
-    progs.sort(reverse=True, key=lambda prog: cbarg.prev_runtime.get(prog, 0))
+    skip_tests = parse_skip_tests(config.get('ksft', 'skip_tests', fallback=''))
+    progs, skipped_progs = filter_prog_list(progs, skip_tests)
+    if skipped_progs:
+        skipped_names = ", ".join(f"{target}:{prog}" for target, prog in skipped_progs)
+        print(f"INFO: skipping {len(skipped_progs)} configured test(s): {skipped_names}")
+    runtime_history_path = config.get('local', 'runtime_history_path', fallback='')
+    runtime_history_cutoff_sec = config.getfloat('cfg', 'runtime_history_cutoff_sec', fallback=10)
+    runtime_history = load_runtime_history(runtime_history_path)
+    progs = sort_progs_by_runtime_history(progs, runtime_history, runtime_history_cutoff_sec)
 
     if live_status_path and live_status:
         with live_lock:
@@ -426,8 +616,6 @@ def test(binfo, rinfo, cbarg):
             'prog': prog[1],
         })
 
-    load_tgt = config.getfloat("cfg", "wait_loadavg", fallback=None)
-    load_ival = config.getfloat("cfg", "wait_loadavg_ival", fallback=30)
     thr_cnt = int(config.get("cfg", "thread_cnt"))
     delay = float(config.get("cfg", "thread_spawn_delay", fallback=0))
     target_cpu_pct = config.getfloat("cfg", "scheduler_target_cpu_pct", fallback=90)
@@ -438,11 +626,10 @@ def test(binfo, rinfo, cbarg):
     min_available_mem_mib = config.getfloat("cfg", "scheduler_min_available_mem_mib", fallback=0)
     max_dirty_mib = config.getfloat("cfg", "scheduler_max_dirty_mib", fallback=512)
     vm_idle_shutdown_sec = config.getfloat("cfg", "scheduler_vm_idle_shutdown_sec", fallback=15)
-    min_workers = config.getint("cfg", "scheduler_min_workers", fallback=0)
 
     scheduler = DynamicWorkerScheduler(
         max_workers=thr_cnt,
-        min_workers=min_workers,
+        min_workers=0,
         target_cpu_pct=target_cpu_pct,
         sample_period_sec=sample_period_sec,
         history_secs=history_secs,
@@ -469,8 +656,6 @@ def test(binfo, rinfo, cbarg):
         for i in range(thr_cnt):
             if i == 1:
                 time.sleep(delay)
-                load_ival /= 2
-            wait_loadavg(load_tgt, check_ival=load_ival)
             print("INFO: starting worker", i)
             threads.append(threading.Thread(target=vm_thread,
                                             args=[config, results_path, i, hard_stop,
@@ -488,8 +673,6 @@ def test(binfo, rinfo, cbarg):
     cases = []
     while not out_queue.empty():
         r = out_queue.get()
-        if 'time' in r:
-            cbarg.prev_runtime[(r["target"], r["prog"])] = r["time"]
         outcome = {
             'test': r['test'],
             'group': "selftests-" + namify(r['target']),
@@ -500,6 +683,7 @@ def test(binfo, rinfo, cbarg):
             if key in r:
                 outcome[key] = r[key]
         cases.append(outcome)
+        runtime_history = update_runtime_history(runtime_history, [r])
     failures = []
     while not failure_queue.empty():
         failures.append(failure_queue.get())
@@ -532,34 +716,16 @@ def test(binfo, rinfo, cbarg):
     if queue_not_empty:
         raise RuntimeError("worker queue was not drained before executor exit")
 
+    save_runtime_history(runtime_history_path, runtime_history)
     print("Done at", datetime.datetime.now())
 
     return cases
 
 
 def main() -> None:
-    cfg_paths = ['remote.config', 'vmksft.config', 'vmksft-p.config']
-    if len(sys.argv) > 1:
-        cfg_paths += sys.argv[1:]
-
-    cbarg = CbArg(cfg_paths)
-    config = cbarg.config
-
-    base_dir = config.get('local', 'base_path')
-
-    life = NipaLifetime(config)
-
-    f = Fetcher(test, cbarg,
-                name=config.get('executor', 'name'),
-                branches_url=config.get('remote', 'branches'),
-                results_path=os.path.join(base_dir, config.get('local', 'json_path')),
-                url_path=config.get('www', 'url') + '/' + config.get('local', 'json_path'),
-                tree_path=config.get('local', 'tree_path'),
-                patches_path=config.get('local', 'patches_path', fallback=None),
-                life=life,
-                first_run=config.get('executor', 'init', fallback="continue"))
-    f.run()
-    life.exit()
+    if len(sys.argv) <= 1:
+        raise SystemExit("usage: local_vmksft_p.py CONFIG_PATH [CONFIG_PATH ...]")
+    run_executor(sys.argv[1:])
 
 
 if __name__ == "__main__":

@@ -152,6 +152,7 @@ function colorify_basic(value)
 {
     return colorify_str_any(value, {"fail": "red",
 				    "pass": "green",
+				    "flake": "orange",
 				    "pending": "#809fff"});
 }
 
@@ -212,19 +213,58 @@ function systemd_add_one(table, system, sname, v)
     mem.setAttribute("style", "text-align: right");
 }
 
-function systemd(data_raw, data_local, data_remote)
+function systemd_is_okay(v)
+{
+    if (v.TriggeredBy == 0) {
+	let state = v.ActiveState + " / " + v.SubState;
+	return state == "active / running" && v.TasksCurrent <= 1;
+    } else {
+	return v.Result == "success";
+    }
+}
+
+let systemd_entries = [];
+
+function reload_systemd()
 {
     var table = document.getElementById("systemd");
+    const summarize = document.getElementById("systemd-summary").checked;
+    var hidden = 0;
+
+    $("#systemd tr").slice(1).remove();
+
+    $.each(systemd_entries, function(i, e) {
+	if (summarize && systemd_is_okay(e.v)) {
+	    hidden++;
+	    return 1;
+	}
+	systemd_add_one(table, e.system, e.name, e.v);
+    });
+
+    if (summarize && hidden) {
+	var row = table.insertRow();
+	var cell = row.insertCell(0);
+	cell.innerHTML = '<span style="font-style: italic;"><b>' + hidden + ' / ' + systemd_entries.length + '</b> trivial services in good state hidden</span>';
+	cell.setAttribute("colspan", "5");
+	cell.setAttribute("style", "text-align: right");
+    }
+}
+
+function systemd(data_raw, data_local, data_remote)
+{
+    systemd_entries = [];
 
     $.each(data_local, function(i, v) {
-	systemd_add_one(table, data_raw, i, v);
+	systemd_entries.push({system: data_raw, name: i, v: v});
     });
 
     $.each(data_remote, function(name, remote) {
 	$.each(remote["services"], function(service, v) {
-	    systemd_add_one(table, remote, name + "/" + service, v);
+	    systemd_entries.push({system: remote, name: name + "/" + service, v: v});
 	});
     });
+
+    reload_systemd();
 }
 
 function load_runners(data_raw)
@@ -365,6 +405,9 @@ function status_system(data_raw)
     load_runners(data_raw["runners"]);
     load_runtime(data_raw["log-files"]);
     load_db_size(data_raw["db"]["data"]);
+
+    let summary_checkbox = document.getElementById("systemd-summary");
+    summary_checkbox.addEventListener("change", reload_systemd);
 }
 
 function msec_to_str(msec) {
@@ -414,34 +457,6 @@ function wrap_link(objA, objB, text)
 	return text;
 
     return "<a href=\"" + url + "\">" + text + "</a>";
-}
-
-function load_fails(data_raw)
-{
-    var fail_table = document.getElementById("recent-fails");
-    var crash_table = document.getElementById("recent-crashes");
-
-    $.each(data_raw, function(idx0, v) {
-	$.each(v.results, function(idx1, r) {
-	    if (r.result != "pass" && nipa_pw_reported(v, r)) {
-		let i = 0, row = fail_table.insertRow();
-		row.insertCell(i++).innerHTML = v.branch;
-		row.insertCell(i++).innerHTML = v.remote;
-		row.insertCell(i++).innerHTML = r.test;
-		row.insertCell(i++).innerHTML = colorify_basic(r.result);
-		if ("retry" in r)
-		    row.insertCell(i++).innerHTML = colorify_basic(r.retry);
-	    }
-
-	    if ("crashes" in r) {
-		for (crash of r.crashes) {
-		    let i = 0, row = crash_table.insertRow();
-		    row.insertCell(i++).innerHTML = wrap_link(r, v, r.test);
-		    row.insertCell(i++).innerHTML = crash;
-		}
-	    }
-	});
-    });
 }
 
 function load_partial_tests(data)
@@ -575,6 +590,26 @@ function reset_summary(summary, branch)
     summary["hidden"] = 0;
 }
 
+function contest_create_table(stream_name, container)
+{
+    var h4 = document.createElement("h4");
+    h4.innerText = "Branch stream: " + stream_name;
+    container.appendChild(h4);
+
+    var table = document.createElement("table");
+    container.appendChild(table);
+
+    var hdr = table.insertRow();
+    var headers = ["Branch", "Remote", "Time", "Tests", "Result"];
+    $.each(headers, function(i, name) {
+	var th = document.createElement("th");
+	th.innerText = name;
+	hdr.appendChild(th);
+    });
+
+    return table;
+}
+
 function load_result_table_one(data_raw, table, reported, avgs)
 {
     const summarize = document.getElementById("contest-summary").checked;
@@ -679,6 +714,47 @@ function load_result_table_one(data_raw, table, reported, avgs)
 		cnt.innerHTML = link_to_contest + str_psf.str + "</a>";
 		res.innerHTML = str_psf.overall;
 		time.innerHTML = msec_to_str(t_end - t_start);
+
+		// Add inline failure and crash rows
+		$.each(v.results, function(i, r) {
+		    // Always show crashes, they are important
+		    if ("crashes" in r) {
+			/* keep going */;
+		    } else if (nipa_pw_reported(v, r) != reported) {
+			return 1;
+		    } else if (r.result == "pass") {
+			return 1;
+		    }
+
+		    var frow = table.insertRow();
+		    frow.insertCell(0); // branch - empty
+		    var fcell = frow.insertCell(1);
+		    fcell.innerHTML = wrap_link(r, v, r.test);
+		    fcell.setAttribute("style", "text-align: right");
+
+		    let result = r.result, retry = null;
+		    if ("retry" in r && r.retry == "pass")
+			result = "flake";
+		    else if ("retry" in r)
+			retry = r.retry;
+		    frow.insertCell(2).innerHTML = colorify_basic(result);
+		    if (retry)
+			frow.insertCell(3).innerHTML = colorify_basic(retry);
+		    else
+			frow.insertCell(3).innerText = "";
+		    frow.insertCell(4).innerText = "";
+
+		    if ("crashes" in r) {
+			$.each(r.crashes, function(ci, crash) {
+			    var crow = table.insertRow();
+			    crow.insertCell(0); // branch - empty
+			    var ccell = crow.insertCell(1);
+			    ccell.innerHTML = crash;
+			    ccell.setAttribute("colspan", "4");
+			    ccell.setAttribute("style", "background-color: rgba(255, 0, 0, 0.1)");
+			});
+		    }
+		});
 	    } else {
 		var pend;
 
@@ -732,8 +808,6 @@ var awol_executors;
 
 function load_result_table(data_raw, reload)
 {
-    var table = document.getElementById("contest");
-    var table_nr = document.getElementById("contest-purgatory");
     var branch_pull_status = {};
     var branch_start = {};
 
@@ -868,12 +942,35 @@ function load_result_table(data_raw, reload)
 	return 0;
     });
 
-    $("#contest tr").slice(1).remove();
-    $("#contest-purgatory tr").slice(1).remove();
-    load_result_table_one(data_raw, table, true, avgs);
-    load_result_table_one(data_raw, table_nr, false, avgs);
+    // Collect unique stream prefixes in alphabetical order
+    var stream_set = new Set();
+    $.each(data_raw, function(i, v) {
+	stream_set.add(v.br_pfx);
+    });
+    var stream_order = Array.from(stream_set).sort();
+
+    var contest_div = document.getElementById("contest-tables");
+    var purgatory_div = document.getElementById("contest-purgatory-tables");
+
+    // Delete the previously loaded tables
+    contest_div.innerHTML = "";
+    purgatory_div.innerHTML = "<h3>Not reporting to patchwork:</h3>";
+
+    $.each(stream_order, function(i, pfx) {
+	var stream_data = [];
+	$.each(data_raw, function(i, v) {
+	    if (v.br_pfx == pfx)
+		stream_data.push(v);
+	});
+
+	var table = contest_create_table(pfx, contest_div);
+	load_result_table_one(stream_data, table, true, avgs);
+
+	var table_nr = contest_create_table(pfx, purgatory_div);
+	load_result_table_one(stream_data, table_nr, false, avgs);
+    });
+
     if (!reload) {
-	load_fails(data_raw);
 	load_partial_tests(data_raw);
     }
 }
@@ -1064,6 +1161,31 @@ function flakes_doit(data_raw)
     flakes_add_summary(flakes, "total", total);
 }
 
+function hw_machines_loaded(data)
+{
+    var table = document.getElementById("hw-machines");
+    var hdr = document.getElementById("hw-machines-hdr");
+
+    // Build header from machine names
+    $.each(data, function(i, m) {
+        var th = document.createElement("th");
+        th.innerText = m.name;
+        hdr.appendChild(th);
+    });
+
+    // Single row with states
+    var row = table.insertRow();
+    $.each(data, function(i, m) {
+        var cell = row.insertCell();
+        var state = m.state;
+        if (m.reserved_by) {
+            var mins = Math.round(m.reserved_secs / 60);
+            state += " (" + m.reserved_by + ", " + mins + "m)";
+        }
+        cell.innerText = state;
+    });
+}
+
 function do_it()
 {
     /*
@@ -1089,5 +1211,8 @@ function do_it()
     });
     $(document).ready(function() {
         $.get("query/flaky-tests", flakes_doit)
+    });
+    $(document).ready(function() {
+        $.get("mc/get_machine_info?caller=status-ui", hw_machines_loaded)
     });
 }

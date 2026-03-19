@@ -44,6 +44,12 @@
             </tr>
         </table>
         <br />
+        <div style="display: flex; justify-content: flex-end; align-items: baseline;">
+            <label>
+                <input type="checkbox" id="systemd-summary" checked />
+                Hide okay services
+            </label>
+        </div>
         <table id="systemd">
             <tr>
                 <th>Service</th>
@@ -51,6 +57,11 @@
                 <th>Tasks</th>
                 <th>CPU cores</th>
                 <th>Memory Use</th>
+            </tr>
+        </table>
+        <br />
+        <table id="hw-machines">
+            <tr id="hw-machines-hdr">
             </tr>
         </table>
         <br />
@@ -66,39 +77,15 @@
         </table>
     </div>
     <div class="column">
-        <h3>Continuous testing results</h3>
-        <div align="right">
-            <input type="checkbox" id="contest-summary" checked />
-            <label for="contest-summary">Hide all-pass runs</label>
+        <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <h3>Continuous testing results</h3>
+            <label>
+                <input type="checkbox" id="contest-summary" checked />
+                Hide all-pass runs
+            </label>
         </div>
-        <table id="contest">
-            <tr>
-                <th>Branch</th>
-                <th>Remote</th>
-                <th>Time</th>
-                <th>Tests</th>
-                <th>Result</th>
-            </tr>
-        </table>
-        <br>
-        <h3>Recent failures</h3>
-        <table id="recent-fails">
-            <tr>
-                <th>Branch</th>
-                <th>Remote</th>
-                <th>Test</th>
-                <th>Result</th>
-                <th>Retry</th>
-            </tr>
-        </table>
-        <br>
-        <h3>Recent crashes</h3>
-        <table id="recent-crashes">
-            <tr>
-                <th>Test</th>
-                <th>Crashes</th>
-            </tr>
-        </table>
+        <div id="contest-tables">
+        </div>
         <br>
         <h3>Tests with missing results</h3>
         <table id="test-presence">
@@ -107,17 +94,6 @@
                 <th># missing</th>
             </tr>
         </table>
-    </div>
-</div>
-<div class="row">
-    <div class="column">
-        <canvas id="run-time"></canvas>
-    </div>
-    <div class="column">
-        <canvas id="db-size"></canvas>
-    </div>
-    <div class="column">
-        <canvas id="process-time"></canvas>
     </div>
 </div>
 <div class="row">
@@ -134,16 +110,20 @@
         </div>
     </div>
     <div class="column">
-        <table id="contest-purgatory">
+        <div id="contest-purgatory-tables">
             <h3>Not reporting to patchwork:</h3>
-            <tr>
-                <th>Branch</th>
-                <th>Remote</th>
-                <th>Time</th>
-                <th>Tests</th>
-                <th>Result</th>
-            </tr>
-        </table>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="column">
+        <canvas id="run-time"></canvas>
+    </div>
+    <div class="column">
+        <canvas id="db-size"></canvas>
+    </div>
+    <div class="column">
+        <canvas id="process-time"></canvas>
     </div>
 </div>
 </body>

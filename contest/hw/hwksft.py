@@ -22,7 +22,8 @@ from lib.deployer import (build_kernel, build_ksft, deploy_artifacts,  # noqa: E
                           kexec_machine, wait_for_results, fetch_results,
                           parse_results, process_crashes, set_log_file,
                           WaitResult, grab_hw_worker_journal, grab_sol_logs,
-                          reboot_machine,
+                          reboot_machine, check_healthy_ssh,
+                          read_device_info,
                           CRASH_SENTINEL, _journal_has_crash_sentinel)
 
 # Config:
@@ -77,9 +78,10 @@ def test(binfo, rinfo, cbarg):  # pylint: disable=unused-argument
 
     tree_path = config.get('local', 'tree_path')
     mc_url = config.get('hw', 'machine_control_url')
+    executor_name = config.get('executor', 'name')
+    mc = MCClient(mc_url, caller=executor_name)
     nic_vendor = config.get('hw', 'nic_vendor')
     nic_model = config.get('hw', 'nic_model')
-    mc = MCClient(mc_url)
 
     # 1. Build kernel + ksft
     try:
@@ -157,12 +159,17 @@ def test(binfo, rinfo, cbarg):  # pylint: disable=unused-argument
         if 'reservation_id' in result:
             reservation_id = result['reservation_id']
             break
-        wait = min(retry_time * (1.5 ** attempt), 300)
         print(f"Reserve failed ({result.get('error', '?')}), "
-              f"retry {attempt+1}/{max_retries} in {wait:.0f}s")
-        time.sleep(wait)
+              f"retry {attempt+1}/{max_retries} in {retry_time}s")
+        time.sleep(retry_time)
     else:
         raise RuntimeError(f"Failed to reserve machines after {max_retries} attempts")
+
+    # Write reservation ID so results can be correlated with hw-worker state
+    # on the test machine (/srv/hw-worker/tests/$reservation_id)
+    with open(os.path.join(results_path, 'reservation-id'), 'w',
+              encoding='utf-8') as fp:
+        fp.write(f'{reservation_id}\n')
 
     max_crash_retries = config.getint('hw', 'max_crash_retries', fallback=2)
     cases = None
@@ -187,7 +194,7 @@ def test(binfo, rinfo, cbarg):  # pylint: disable=unused-argument
                              tree_path, kernel_version, filters=filters)
             set_log_file(None)
 
-        for attempt in range(max_crash_retries + 1):
+        for attempt in range(max_crash_retries):
             attempt_sfx = f'-{attempt}' if attempt > 0 else ''
 
             # Record SOL position before kexec
@@ -197,15 +204,26 @@ def test(binfo, rinfo, cbarg):  # pylint: disable=unused-argument
                 sol_start_ids[mid] = sol.get('last_id', 0)
 
             # 6. kexec into new kernel
+            kexec_failed = False
             with open(os.path.join(results_path, f'deploy{attempt_sfx}'), 'a',
                       encoding='utf-8') as fp:
                 set_log_file(fp)
-                kexec_machine(config, machine_ips, reservation_id, mc=mc)
+                try:
+                    kexec_machine(config, machine_ips, reservation_id, mc=mc)
+                except TimeoutError:
+                    print(f"kexec: machine not reachable after kexec, "
+                          "treating as crash")
+                    kexec_failed = True
                 set_log_file(None)
 
-            # 7. Wait for hw-worker with crash monitoring
-            wait_result = wait_for_results(config, mc, reservation_id,
-                                           machine_ids, machine_ips)
+            if kexec_failed:
+                wait_result = WaitResult(ok=False,
+                                         error='machine not reachable after kexec',
+                                         needs_power_cycle=True)
+            else:
+                # 7. Wait for hw-worker with crash monitoring
+                wait_result = wait_for_results(config, mc, reservation_id,
+                                               machine_ids, machine_ips)
 
             # 8. Grab debug artifacts for this attempt.
             # If machine is hung (needs_power_cycle), it may still
@@ -241,14 +259,25 @@ def test(binfo, rinfo, cbarg):  # pylint: disable=unused-argument
 
             # Do the reboot even if we are about to give up, otherwise
             # if machine is hung we won't be able to fetch results
-            if attempt >= max_crash_retries:
+            if attempt >= max_crash_retries - 1:
                 print(f"Max crash retries ({max_crash_retries}) reached, giving up")
                 break
 
-        # 10. Copy back results
+        # 10. Ensure machine is reachable before fetching results
+        if not check_healthy_ssh(machine_ips[0]):
+            print("Machine unreachable, rebooting before fetching results")
+            reboot_machine(config, mc, reservation_id,
+                           machine_ids, machine_ips)
+
+        # 11. Copy back results
         fetch_results(machine_ips, reservation_id, results_path)
 
-        # 11. Parse results
+        # Populate device info from hw_worker's devlink collection
+        dev_info = read_device_info(results_path)
+        if dev_info:
+            rinfo['device'] = dev_info
+
+        # 12. Parse results
         cases = parse_results(results_path, link)
 
         # 12. Post-process crashes: decode stack traces, extract fingerprints

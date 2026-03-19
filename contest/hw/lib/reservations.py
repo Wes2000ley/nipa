@@ -5,6 +5,7 @@
 import datetime
 import subprocess
 import threading
+import time
 
 import psycopg2
 
@@ -92,6 +93,7 @@ class ReservationManager:
             self.active[reservation_id] = {
                 'caller': caller,
                 'machine_ids': machine_ids,
+                'reserved_at': now,
                 'last_refresh': now,
                 'timeout': timeout,
             }
@@ -155,7 +157,8 @@ class ReservationManager:
             if ipaddr and self._ssh_reboot(ipaddr):
                 print(f"Reservation: SSH reboot sent to machine {mid} ({ipaddr})")
                 with self.lock:
-                    machine['state'] = MachineState.REBOOT_ISSUED
+                    machine['state'] = MachineState.SSH_REBOOT_ISSUED
+                    machine['ssh_reboot_at'] = time.monotonic()
             else:
                 # Fall back to BMC power cycle
                 bmc = self.bmc_map.get(mid)
@@ -163,12 +166,22 @@ class ReservationManager:
                     print(f"Reservation: BMC power cycle for machine {mid}")
                     bmc.power_cycle()
                     with self.lock:
-                        machine['state'] = MachineState.REBOOT_ISSUED
+                        machine['state'] = MachineState.POWER_CYCLE_ISSUED
 
     @staticmethod
     def _ssh_reboot(ipaddr):
         """Try to reboot a machine via SSH. Returns True on success."""
         try:
+            # Probe if SSH is responsive before issuing reboot
+            ret = subprocess.run(
+                ['ssh', '-o', 'ConnectTimeout=5',
+                 '-o', 'StrictHostKeyChecking=no',
+                 '-o', 'BatchMode=yes',
+                 f'root@{ipaddr}', 'true'],
+                capture_output=True, timeout=10, check=False
+            )
+            if ret.returncode != 0:
+                return False
             subprocess.run(
                 ['ssh', '-o', 'ConnectTimeout=5',
                  '-o', 'StrictHostKeyChecking=no',

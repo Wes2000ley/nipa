@@ -148,6 +148,9 @@ def normalize_final_result(result):
         normalized["result"] = "warn"
     if normalized.get("retry") not in FINAL_RESULTS:
         normalized.pop("retry", None)
+        normalized.pop("retry_output_url", None)
+    elif normalized.get("link"):
+        normalized["retry_output_url"] = retry_output_url_for_result_link(normalized["link"])
 
     if "results" in normalized and isinstance(normalized["results"], list):
         normalized["results"] = [normalize_final_result(entry) for entry in normalized["results"]]
@@ -163,6 +166,12 @@ def normalize_live_value(value):
     return ""
 
 
+def retry_output_url_for_result_link(link):
+    if not link:
+        return ""
+    return f"{link}-retry/stdout"
+
+
 def live_result_from_test(test):
     result = {
         "group": test.get("group", ""),
@@ -173,6 +182,8 @@ def live_result_from_test(test):
 
     if test.get("retry") or test.get("status") in {"retry-running", "retry-queued"}:
         result["retry"] = normalize_live_value(test.get("retry")) or "warn"
+    if test.get("retry") and test.get("log_url"):
+        result["retry_output_url"] = retry_output_url_for_result_link(test["log_url"])
 
     if "time" in test:
         result["time"] = test.get("time")
@@ -348,7 +359,6 @@ def main():
     }
     write_json(site_root / "history.json", payload)
     write_json(site_root / "contest" / "all-results.json", contest_rows)
-    write_json(site_root / "contest" / "filters.json", {"ignore-results": []})
 
 
 if __name__ == "__main__":

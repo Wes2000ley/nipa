@@ -32,11 +32,6 @@ function nipa_br_pfx_get(name)
     return name.substring(0, name.length - 18);
 }
 
-function nipa_test_fullname(v, r)
-{
-    return v.remote + "/" + v.executor + "/" + r.group + "/" + r.test;
-}
-
 function __nipa_filters_set(update_cb, set_name, enabled)
 {
     if (set_name.constructor === Array) {
@@ -138,32 +133,6 @@ function nipa_filter_add_options(data_raw, elem_id, field)
     for (const value of values) {
 	nipa_select_add_option(elem, value, value);
     }
-}
-
-let nipa_filters_json = null;
-
-function nipa_set_filters_json(filters_json)
-{
-    nipa_filters_json = filters_json;
-}
-
-function nipa_pw_reported(v, r)
-{
-    for (const filter of nipa_filters_json["ignore-results"]) {
-	if (!("remote" in filter) || filter.remote == v.remote) {
-	    if (!("executor" in filter) || filter.executor == v.executor) {
-		if (!("branch" in filter) || filter.branch == v.branch) {
-		    if (!("group" in filter) || filter.group == r.group) {
-			if (!("test" in filter) || filter.test == r.test) {
-			    return false;
-			}
-		    }
-		}
-	    }
-	}
-    }
-
-    return true;
 }
 
 function nipa_load_sitemap()

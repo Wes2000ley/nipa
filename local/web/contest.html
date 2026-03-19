@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PW contest</title>
+    <title>Local vmksft Result Log</title>
     <link rel="shortcut icon" href="/favicon-contest.png" type="image/png" />
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.4/jquery.min.js"></script>
@@ -19,21 +19,9 @@
 <body onload="do_it();">
 <div id="sitemap"></div>
 <div class="row-small">
-    <fieldset id="loading-fieldset">
-        <legend>Loading:</legend>
-        <label for="ld_branch">Single branch:</label>
-        <br />
-        <input id="ld_branch" name="ld-pw" disabled />
-        <div style="height:1em;">&nbsp;</div>
-        <label for="ld_cnt">Branch count:</label>
-        <br />
-        <input type="number" step="25" id="ld_cnt" name="ld-pw" value="125" style="width:8em;" disabled />
-        <div style="height:1em;">&nbsp;</div>
-        <input type="checkbox" id="ld-cases" name="ld-pw" disabled />
-        <label for="ld-cases">individual sub-cases</label>
-    </fieldset>
     <fieldset>
       <legend>Filtering:</legend>
+      <input type="hidden" id="test" value="" />
 
       <div class="row-small">
           <div class="column-small">
@@ -56,36 +44,10 @@
           </div>
           <div class="column-small">
               <div>
-                  <label for="remote">Remote</label>
-                  <select id="remote" name="fl-pw" disabled>
-                      <option value="">-- all --</option>
-                  </select>
-              </div>
-              <div>
                   <label for="branch">Branch</label>
                   <select id="branch" name="fl-pw" disabled>
                       <option value="">-- all --</option>
                   </select>
-              </div>
-              <div>
-                  <label for="executor">Executor</label>
-                  <select id="executor" name="fl-pw" disabled>
-                      <option value="">-- all --</option>
-                  </select>
-              </div>
-          </div>
-          <div class="column-small">
-              <div>
-                  <input type="checkbox" id="pw-y" name="fl-pw" disabled checked />
-                  <label for="pw-y">Reported to patchwork</label>
-              </div>
-              <div>
-                  <input type="checkbox" id="pw-n" name="fl-pw" disabled checked />
-                  <label for="pw-n">Ignored by patchwork</label>
-              </div>
-              <div>
-                  <label for="test">Test</label>
-                  <input type="text" id="test" name="fl-pw" disabled />
               </div>
           </div>
           <div class="column-small">

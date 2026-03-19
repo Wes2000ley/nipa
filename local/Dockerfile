@@ -8,6 +8,7 @@ RUN dnf -y --setopt=install_weak_deps=False --nodocs install \
         ca-certificates \
         curl-minimal \
         gcc \
+        gcc-c++ \
         make \
         bison \
         flex \
@@ -164,6 +165,7 @@ RUN python3 -m venv "${VIRTUAL_ENV}" \
         "patatt==${PATATT_VERSION}" \
         "pylint==${PYLINT_VERSION}" \
         "ruff==${RUFF_VERSION}" \
+        "jsonschema" \
         "requests" \
         "psutil" \
         "PyYAML" \

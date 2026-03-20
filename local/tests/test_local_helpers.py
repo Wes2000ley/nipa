@@ -66,6 +66,19 @@ class LocalHelperTests(unittest.TestCase):
             {"kmalloc_trace_noprof:tcp_ao_alloc_info:do_tcp_setsockopt:do_sock_setsockopt:__sys_setsockopt"},
         )
 
+    def test_extract_crash_finalizes_fingerprint_when_log_ends_mid_crash(self):
+        output = (
+            "[ 1.0] Hardware name: x\n"
+            "[ 1.1] Call Trace:\n"
+            "[ 1.2]  foo+0x1/0x2\n"
+            "[ 1.3]  bar+0x1/0x2\n"
+            "[ 1.4]  baz+0x1/0x2\n"
+        )
+
+        _lines, fingerprints = extract_crash(output, "xx__-> ", lambda: None)
+
+        self.assertEqual(fingerprints, {"foo:bar:baz"})
+
 
 if __name__ == "__main__":
     unittest.main()

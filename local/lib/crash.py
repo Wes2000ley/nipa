@@ -52,7 +52,8 @@ def extract_crash(outputs, prompt, get_filters):
             in_crash &= "] ---[ end trace " not in line
             in_crash &= "]  </TASK>" not in line
             in_crash &= line[-2:] != "] "
-            in_crash &= not line.startswith(prompt)
+            if prompt:
+                in_crash &= not line.startswith(prompt)
             if not in_crash:
                 last5 = [""] * 5
                 finger_prints.add(crash_finger_print(get_filters(), crash_lines[start:]))
@@ -69,5 +70,8 @@ def extract_crash(outputs, prompt, get_filters):
 
         if in_crash:
             crash_lines.append(line)
+
+    if in_crash:
+        finger_prints.add(crash_finger_print(get_filters(), crash_lines[start:]))
 
     return crash_lines, finger_prints

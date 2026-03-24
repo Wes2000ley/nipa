@@ -9,9 +9,11 @@ readonly COMPOSE_FILE="${LOCAL_DIR}/docker-compose.yml"
 readonly COMPOSE_SERVICE="vmksft-service"
 readonly CONTAINER_QUEUE="/workspace/local/bin/vmksft_queue.py"
 readonly CONTAINER_PATCH_ROOT="/tmp/local-vmksft-uploaded-patches"
+readonly CONTAINER_INJECT_ROOT="/tmp/local-vmksft-uploaded-files"
+readonly CONTAINER_KERNEL_TREE="/workspace/kernel"
 
 PREPARED_QUEUE_ARGS=()
-STAGED_PATCH_DIR=""
+STAGED_PATHS=()
 
 usage() {
 	cat <<'EOF'
@@ -29,14 +31,20 @@ Examples:
   ./vmksft dirty --threads 4
   ./vmksft committed --tests 'net:tcp_fastopen_backup_key.sh'
   ./vmksft dirty --tests 'net/packetdrill:tcp_rcv_toobig.pkt'
+  ./vmksft committed --inject-file /tmp/helper.sh /abs/kernel/tree/tools/testing/selftests/net/
+  ./vmksft dirty --inject-file /tmp/a.c /abs/kernel/tree/net/core/a.c --inject-file /tmp/b.h /abs/kernel/tree/include/linux/b.h
   ./vmksft patches --patch-dir ~/series --fresh-cache
   ./vmksft patches --patch-dir ~/series --tests 'net:mptcp_connect.sh'
+  ./vmksft patches --patch-dir ~/series --inject-file ./fix.c /abs/kernel/tree/net/core/fix.c
   ./vmksft list
 
 Behavior:
   - The only supported runtime is the long-lived Docker Compose service.
   - Start it with `docker compose up -d vmksft-service` or the Compose systemd unit.
   - `patches` mode freezes the supplied patch directory at queue time.
+  - `--inject-file SRC DEST` overlays SRC onto absolute DEST within the configured kernel tree.
+  - Repeat `--inject-file` once per file you want to overlay.
+  - If DEST ends with `/`, vmksft appends the source basename after normalizing the path.
   - `--tests` accepts whitespace/comma-separated selectors like `prog.sh` or `target:prog.sh`.
 EOF
 }
@@ -112,6 +120,64 @@ run_queue() {
 	run_compose exec -T "${COMPOSE_SERVICE}" python3 "${CONTAINER_QUEUE}" "$@"
 }
 
+resolve_configured_kernel_tree() {
+	python3 - "${LOCAL_DIR}" "${LOCAL_DIR}/vmksft" <<'PY'
+import sys
+
+from pathlib import Path
+
+local_dir = Path(sys.argv[1])
+script_path = sys.argv[2]
+sys.path.insert(0, str(local_dir / "lib"))
+
+from vmksft_service_lib import load_runtime_config
+
+try:
+    print(load_runtime_config(script_path).kernel_tree)
+except Exception as exc:
+    print(f"vmksft: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+normalize_inject_spec() {
+	local source_input="$1"
+	local destination_input="$2"
+	local kernel_tree="$3"
+
+	python3 - "${LOCAL_DIR}" "${PWD}" "${source_input}" "${destination_input}" "${kernel_tree}" \
+		"${CONTAINER_KERNEL_TREE}" <<'PY'
+import sys
+
+from pathlib import Path
+
+local_dir = Path(sys.argv[1])
+base_dir = Path(sys.argv[2])
+source_input = sys.argv[3]
+destination_input = sys.argv[4]
+kernel_tree = Path(sys.argv[5])
+container_kernel_tree = Path(sys.argv[6])
+
+sys.path.insert(0, str(local_dir / "lib"))
+
+from vmksft_service_lib import normalize_inject_destination, resolve_inject_source_path
+
+try:
+    source_path = resolve_inject_source_path(source_input, base_dir)
+    destination_path, relative_destination = normalize_inject_destination(
+        destination_input,
+        source_path.name,
+        kernel_tree,
+        base_dir,
+    )
+    print(source_path)
+    print(container_kernel_tree / relative_destination)
+except Exception as exc:
+    print(f"vmksft: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
 reject_unsupported_options() {
 	local command="$1"
 	shift
@@ -131,16 +197,33 @@ prepare_queue_submit_args() {
 	shift
 
 	local -a rewritten=()
+	local -a inject_pairs=()
 	local patch_dir=""
 	local expect_patch_dir=0
+	local expect_inject_source=0
+	local expect_inject_destination=0
+	local inject_source=""
+	local kernel_tree=""
 
 	PREPARED_QUEUE_ARGS=()
-	STAGED_PATCH_DIR=""
+	STAGED_PATHS=()
 
 	for arg in "$@"; do
 		if (( expect_patch_dir == 1 )); then
 			patch_dir="${arg}"
 			expect_patch_dir=0
+			continue
+		fi
+		if (( expect_inject_source == 1 )); then
+			inject_source="${arg}"
+			expect_inject_source=0
+			expect_inject_destination=1
+			continue
+		fi
+		if (( expect_inject_destination == 1 )); then
+			inject_pairs+=("${inject_source}" "${arg}")
+			inject_source=""
+			expect_inject_destination=0
 			continue
 		fi
 
@@ -151,6 +234,9 @@ prepare_queue_submit_args() {
 		--patch-dir=*)
 			patch_dir="${arg#*=}"
 			;;
+		--inject-file)
+			expect_inject_source=1
+			;;
 		*)
 			rewritten+=("${arg}")
 			;;
@@ -159,6 +245,10 @@ prepare_queue_submit_args() {
 
 	if (( expect_patch_dir == 1 )); then
 		printf 'vmksft: missing value for --patch-dir\n' >&2
+		exit 2
+	fi
+	if (( expect_inject_source == 1 || expect_inject_destination == 1 )); then
+		printf 'vmksft: --inject-file requires SRC DEST\n' >&2
 		exit 2
 	fi
 
@@ -187,13 +277,13 @@ prepare_queue_submit_args() {
 		local patch_tag="patches-$(date -u +%Y%m%d-%H%M%S)-$$-${RANDOM}"
 		local container_patch_dir="${CONTAINER_PATCH_ROOT}/${patch_tag}"
 
-		STAGED_PATCH_DIR="${container_patch_dir}"
+		STAGED_PATHS+=("${container_patch_dir}")
 		run_compose exec -T "${COMPOSE_SERVICE}" mkdir -p "${CONTAINER_PATCH_ROOT}"
 		run_compose exec -T "${COMPOSE_SERVICE}" rm -rf "${container_patch_dir}"
 		run_compose exec -T "${COMPOSE_SERVICE}" mkdir -p "${container_patch_dir}"
 		if ! tar -C "${patch_dir}" -cf - . | \
 			run_compose exec -T "${COMPOSE_SERVICE}" tar -xf - -C "${container_patch_dir}"; then
-			cleanup_staged_patch_dir
+			cleanup_staged_paths
 			printf 'vmksft: failed to stage patch directory into docker backend\n' >&2
 			exit 1
 		fi
@@ -202,13 +292,68 @@ prepare_queue_submit_args() {
 		rewritten+=(--patch-dir "${patch_dir}")
 	fi
 
+	if (( ${#inject_pairs[@]} > 0 )); then
+		need_cmd python3
+		need_cmd tar
+		kernel_tree="$(resolve_configured_kernel_tree)" || exit 1
+		[[ -d "${kernel_tree}" ]] || {
+			printf 'vmksft: kernel tree not found: %s\n' "${kernel_tree}" >&2
+			exit 1
+		}
+
+		local inject_tag="inject-$(date -u +%Y%m%d-%H%M%S)-$$-${RANDOM}"
+		local container_inject_dir="${CONTAINER_INJECT_ROOT}/${inject_tag}"
+		local idx=0
+		local ordinal=0
+		local source_path=""
+		local container_destination=""
+		local source_dir=""
+		local source_name=""
+		local staged_source_dir=""
+		local normalized_output=""
+		local -a normalized=()
+
+		STAGED_PATHS+=("${container_inject_dir}")
+		run_compose exec -T "${COMPOSE_SERVICE}" mkdir -p "${CONTAINER_INJECT_ROOT}"
+		run_compose exec -T "${COMPOSE_SERVICE}" rm -rf "${container_inject_dir}"
+		run_compose exec -T "${COMPOSE_SERVICE}" mkdir -p "${container_inject_dir}"
+
+		while (( idx < ${#inject_pairs[@]} )); do
+			normalized_output="$(
+				normalize_inject_spec "${inject_pairs[idx]}" "${inject_pairs[idx + 1]}" "${kernel_tree}"
+			)" || exit 1
+			mapfile -t normalized <<<"${normalized_output}"
+			source_path="${normalized[0]}"
+			container_destination="${normalized[1]}"
+			source_dir="$(dirname -- "${source_path}")"
+			source_name="$(basename -- "${source_path}")"
+			ordinal=$((ordinal + 1))
+			printf -v staged_source_dir '%s/%04d' "${container_inject_dir}" "${ordinal}"
+
+			run_compose exec -T "${COMPOSE_SERVICE}" mkdir -p "${staged_source_dir}"
+			if ! tar -C "${source_dir}" -cf - -- "${source_name}" | \
+				run_compose exec -T "${COMPOSE_SERVICE}" tar -xf - -C "${staged_source_dir}"; then
+				cleanup_staged_paths
+				printf 'vmksft: failed to stage injected file into docker backend\n' >&2
+				exit 1
+			fi
+
+			rewritten+=(--inject-file "${staged_source_dir}/${source_name}" "${container_destination}")
+			idx=$((idx + 2))
+		done
+	fi
+
 	PREPARED_QUEUE_ARGS=("${rewritten[@]}")
 }
 
-cleanup_staged_patch_dir() {
-	[[ -n "${STAGED_PATCH_DIR}" ]] || return 0
-	run_compose exec -T "${COMPOSE_SERVICE}" rm -rf "${STAGED_PATCH_DIR}" >/dev/null 2>&1 || true
-	STAGED_PATCH_DIR=""
+cleanup_staged_paths() {
+	local path=""
+	local idx=0
+	for (( idx=${#STAGED_PATHS[@]} - 1; idx >= 0; idx-- )); do
+		path="${STAGED_PATHS[idx]}"
+		run_compose exec -T "${COMPOSE_SERVICE}" rm -rf "${path}" >/dev/null 2>&1 || true
+	done
+	STAGED_PATHS=()
 }
 
 run_submit() {
@@ -224,13 +369,13 @@ run_submit() {
 	local rc=$?
 	set -e
 
-	cleanup_staged_patch_dir
+	cleanup_staged_paths
 	return "${rc}"
 }
 
 main() {
 	local command="${1:-}"
-	trap cleanup_staged_patch_dir EXIT
+	trap cleanup_staged_paths EXIT
 
 	case "${command}" in
 	""|-h|--help|help)

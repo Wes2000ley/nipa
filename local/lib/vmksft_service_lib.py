@@ -87,6 +87,20 @@ class JobOptions:
     fresh_cache: bool = False
     patch_dir: str = ""
     tests: str = ""
+    inject_files: tuple = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class InjectFile:
+    source: str
+    destination: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ResolvedInjectFile:
+    source: Path
+    destination: Path
+    relative_destination: str
 
 
 def utc_now():
@@ -124,6 +138,62 @@ def resolve_path(value, base_dir):
     if not path.is_absolute():
         path = base_dir / path
     return path.resolve()
+
+
+def resolve_inject_source_path(value, base_dir):
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return Path(os.path.abspath(path))
+
+
+def normalize_inject_destination(value, source_name, kernel_tree, base_dir):
+    raw_value = value.strip()
+    if not raw_value:
+        raise ValueError("inject destination cannot be empty")
+
+    destination = Path(raw_value).expanduser()
+    if not destination.is_absolute():
+        raise ValueError(f"inject destination must be an absolute path: {value}")
+
+    destination = resolve_path(str(destination), base_dir)
+    if raw_value.endswith(os.sep):
+        destination = destination / source_name
+    elif destination.is_dir():
+        raise ValueError(f"inject destination is a directory; add a trailing /: {value}")
+
+    kernel_tree = kernel_tree.resolve()
+    try:
+        relative_destination = destination.relative_to(kernel_tree)
+    except ValueError as exc:
+        raise ValueError(f"inject destination must be under kernel tree: {value}") from exc
+
+    return destination, relative_destination.as_posix()
+
+
+def resolve_inject_files(entries, kernel_tree, base_dir):
+    resolved = []
+    for entry in entries:
+        source = resolve_inject_source_path(entry.source, base_dir)
+        if not source.exists() and not source.is_symlink():
+            raise FileNotFoundError(f"inject source not found: {source}")
+        if source.is_dir() and not source.is_symlink():
+            raise ValueError(f"inject source must be a file or symlink: {source}")
+
+        destination, relative_destination = normalize_inject_destination(
+            entry.destination,
+            source.name,
+            kernel_tree,
+            base_dir,
+        )
+        resolved.append(
+            ResolvedInjectFile(
+                source=source,
+                destination=destination,
+                relative_destination=relative_destination,
+            )
+        )
+    return tuple(resolved)
 
 
 def find_local_root(script_path):
@@ -282,16 +352,20 @@ def copy_untracked_files(src_root, dst_root):
         rel = entry.decode("utf-8", "surrogateescape")
         src = src_root / rel
         dst = dst_root / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists() or dst.is_symlink():
-            if dst.is_dir() and not dst.is_symlink():
-                shutil.rmtree(dst)
-            else:
-                dst.unlink()
-        if src.is_symlink():
-            dst.symlink_to(os.readlink(src))
+        copy_tree_entry(src, dst)
+
+
+def copy_tree_entry(src, dst):
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
         else:
-            shutil.copy2(src, dst, follow_symlinks=False)
+            dst.unlink()
+    if src.is_symlink():
+        dst.symlink_to(os.readlink(src))
+    else:
+        shutil.copy2(src, dst, follow_symlinks=False)
 
 
 def patch_has_diff(path):
@@ -367,7 +441,7 @@ def _finalize_snapshot_commit(repo, message):
 def _prepare_committed_snapshot(job_dir, kernel_tree, source_head):
     snapshot_tree = job_dir / "source-tree"
     clone_snapshot_repo(kernel_tree, snapshot_tree, source_head)
-    return snapshot_tree, source_head, 0
+    return snapshot_tree, 0
 
 
 def _prepare_dirty_snapshot(job_dir, kernel_tree, source_head):
@@ -386,8 +460,7 @@ def _prepare_dirty_snapshot(job_dir, kernel_tree, source_head):
             check=True,
         )
     copy_untracked_files(kernel_tree, snapshot_tree)
-    snapshot_head, _ = _finalize_snapshot_commit(snapshot_tree, "local-vmksft dirty snapshot")
-    return snapshot_tree, snapshot_head, 0
+    return snapshot_tree, 0
 
 
 def _prepare_patches_snapshot(job_dir, kernel_tree, patch_dir, source_head):
@@ -401,7 +474,13 @@ def _prepare_patches_snapshot(job_dir, kernel_tree, patch_dir, source_head):
         shutil.copy2(patch, copied_patch_dir / patch.name)
 
     _copied_patch_files, patch_count = apply_patch_series(snapshot_tree, copied_patch_dir)
-    return snapshot_tree, git_head(snapshot_tree), patch_count
+    return snapshot_tree, patch_count
+
+
+def overlay_injected_files(snapshot_tree, inject_files):
+    for entry in inject_files:
+        destination = snapshot_tree / Path(entry.relative_destination)
+        copy_tree_entry(entry.source, destination)
 
 
 def generate_job_id():
@@ -498,6 +577,7 @@ def enqueue_job(config, options):
     patch_dir = None
     if options.patch_dir:
         patch_dir = resolve_path(options.patch_dir, Path.cwd())
+    inject_files = resolve_inject_files(options.inject_files, config.kernel_tree, Path.cwd())
     if options.mode == "patches":
         if patch_dir is None:
             raise ValueError("--patch-dir is required for patches mode")
@@ -519,20 +599,30 @@ def enqueue_job(config, options):
 
     try:
         if options.mode == "committed":
-            snapshot_tree, snapshot_head, patch_count = _prepare_committed_snapshot(
+            snapshot_tree, patch_count = _prepare_committed_snapshot(
                 job_dir, config.kernel_tree, source_head)
         elif options.mode == "dirty":
-            snapshot_tree, snapshot_head, patch_count = _prepare_dirty_snapshot(
+            snapshot_tree, patch_count = _prepare_dirty_snapshot(
                 job_dir, config.kernel_tree, source_head)
         elif options.mode == "patches":
-            snapshot_tree, snapshot_head, patch_count = _prepare_patches_snapshot(
+            snapshot_tree, patch_count = _prepare_patches_snapshot(
                 job_dir, config.kernel_tree, patch_dir, source_head)
         else:
             raise ValueError(f"unsupported mode: {options.mode}")
+
+        overlay_injected_files(snapshot_tree, inject_files)
+
+        commit_message = {
+            "committed": "local-vmksft committed snapshot",
+            "dirty": "local-vmksft dirty snapshot",
+            "patches": "local-vmksft injected overlay",
+        }[options.mode]
+        snapshot_head, _ = _finalize_snapshot_commit(snapshot_tree, commit_message)
     except Exception:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise
 
+    inject_destinations = [entry.relative_destination for entry in inject_files]
     queue_entry = make_queue_entry_name(submitted_ns, job_id)
     job_data = {
         "job_id": job_id,
@@ -548,6 +638,8 @@ def enqueue_job(config, options):
         "targets": config.targets,
         "patch_dir": str(patch_dir) if patch_dir is not None else "",
         "patch_count": patch_count,
+        "inject_count": len(inject_destinations),
+        "inject_destinations": inject_destinations,
         "selected_tests": options.tests.strip(),
         "skip_tests": config.skip_tests,
         "options": dataclasses.asdict(options),
@@ -699,6 +791,8 @@ def _job_public_record(record):
         "requested_mode": record.get("requested_mode", ""),
         "targets": record.get("targets", ""),
         "selected_tests": record.get("selected_tests", ""),
+        "inject_count": record.get("inject_count", 0),
+        "inject_destinations": record.get("inject_destinations", []),
         "source_branch": record.get("source_branch", ""),
         "source_head": record.get("source_head", ""),
         "snapshot_head": record.get("snapshot_head", ""),

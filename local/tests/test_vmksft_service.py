@@ -21,6 +21,7 @@ from vmksft_queue import build_options, parse_args  # noqa: E402
 from vmksft_service import VmksftService  # noqa: E402
 from vmksft_job_lib import build_executor_config, create_relative_symlink, create_run_layout  # noqa: E402
 from vmksft_service_lib import (  # noqa: E402
+    InjectFile,
     JobOptions,
     RuntimeConfig,
     cancel_queued_job,
@@ -99,6 +100,54 @@ class VmksftServiceTest(unittest.TestCase):
         self.assertIn("dirty", tracked.read_text(encoding="utf-8"))
         self.assertEqual(record["requested_mode"], "dirty")
 
+    def test_enqueue_committed_job_overlays_injected_file(self):
+        inject_source = self.root / "inject-helper.sh"
+        inject_source.write_text("#!/bin/sh\necho injected\n", encoding="utf-8")
+
+        record = enqueue_job(
+            self.config,
+            JobOptions(
+                mode="committed",
+                inject_files=(
+                    InjectFile(
+                        source=str(inject_source),
+                        destination=str(self.kernel_tree / "tools/testing/selftests/net") + "/",
+                    ),
+                ),
+            ),
+        )
+
+        snapshot_tree = Path(record["snapshot_tree"])
+        injected = snapshot_tree / "tools/testing/selftests/net/inject-helper.sh"
+
+        self.assertTrue(injected.is_file())
+        self.assertEqual(injected.read_text(encoding="utf-8"), inject_source.read_text(encoding="utf-8"))
+        self.assertNotEqual(record["snapshot_head"], record["source_head"])
+        self.assertEqual(record["inject_count"], 1)
+        self.assertEqual(record["inject_destinations"], ["tools/testing/selftests/net/inject-helper.sh"])
+
+    def test_enqueue_dirty_job_applies_injected_file_last(self):
+        tracked = self.kernel_tree / "tools/testing/selftests/net/sample.sh"
+        tracked.write_text("#!/bin/sh\necho dirty\n", encoding="utf-8")
+        inject_source = self.root / "dirty-override.sh"
+        inject_source.write_text("#!/bin/sh\necho injected last\n", encoding="utf-8")
+
+        record = enqueue_job(
+            self.config,
+            JobOptions(
+                mode="dirty",
+                inject_files=(
+                    InjectFile(source=str(inject_source), destination=str(tracked)),
+                ),
+            ),
+        )
+
+        snapshot_tree = Path(record["snapshot_tree"])
+        snapshot_file = snapshot_tree / "tools/testing/selftests/net/sample.sh"
+
+        self.assertEqual(snapshot_file.read_text(encoding="utf-8"), inject_source.read_text(encoding="utf-8"))
+        self.assertNotEqual(record["snapshot_head"], record["source_head"])
+
     def test_enqueue_patches_job_freezes_explicit_patch_dir(self):
         tracked = self.kernel_tree / "tools/testing/selftests/net/sample.sh"
         tracked.write_text("#!/bin/sh\necho queued patch\n", encoding="utf-8")
@@ -122,9 +171,68 @@ class VmksftServiceTest(unittest.TestCase):
         self.assertEqual(record["patch_dir"], str(self.patch_dir))
         self.assertEqual(record["patch_count"], 1)
 
+    def test_enqueue_patches_job_applies_injected_file_after_patch_series(self):
+        tracked = self.kernel_tree / "tools/testing/selftests/net/sample.sh"
+        tracked.write_text("#!/bin/sh\necho queued patch\n", encoding="utf-8")
+        patch_path = self.patch_dir / "0001-sample.patch"
+        with patch_path.open("wb") as fp:
+            subprocess.run(
+                ["git", "-C", str(self.kernel_tree), "diff", "--binary", "--no-ext-diff", "HEAD", "--"],
+                check=True,
+                stdout=fp,
+                stderr=subprocess.PIPE,
+            )
+
+        inject_source = self.root / "patch-override.sh"
+        inject_source.write_text("#!/bin/sh\necho injected after patches\n", encoding="utf-8")
+
+        record = enqueue_job(
+            self.config,
+            JobOptions(
+                mode="patches",
+                patch_dir=str(self.patch_dir),
+                inject_files=(
+                    InjectFile(source=str(inject_source), destination=str(tracked)),
+                ),
+            ),
+        )
+
+        snapshot_tree = Path(record["snapshot_tree"])
+        snapshot_file = snapshot_tree / "tools/testing/selftests/net/sample.sh"
+
+        self.assertEqual(snapshot_file.read_text(encoding="utf-8"), inject_source.read_text(encoding="utf-8"))
+        self.assertEqual(record["patch_count"], 1)
+        self.assertEqual(record["inject_destinations"], ["tools/testing/selftests/net/sample.sh"])
+
     def test_enqueue_patches_job_requires_explicit_patch_dir(self):
         with self.assertRaisesRegex(ValueError, "--patch-dir is required"):
             enqueue_job(self.config, JobOptions(mode="patches"))
+
+    def test_enqueue_job_last_injected_file_wins_for_duplicate_destination(self):
+        first = self.root / "first.sh"
+        first.write_text("#!/bin/sh\necho first\n", encoding="utf-8")
+        second = self.root / "second.sh"
+        second.write_text("#!/bin/sh\necho second\n", encoding="utf-8")
+        destination = str(self.kernel_tree / "tools/testing/selftests/net/override.sh")
+
+        record = enqueue_job(
+            self.config,
+            JobOptions(
+                inject_files=(
+                    InjectFile(source=str(first), destination=destination),
+                    InjectFile(source=str(second), destination=destination),
+                ),
+            ),
+        )
+
+        snapshot_tree = Path(record["snapshot_tree"])
+        snapshot_file = snapshot_tree / "tools/testing/selftests/net/override.sh"
+
+        self.assertEqual(snapshot_file.read_text(encoding="utf-8"), second.read_text(encoding="utf-8"))
+        self.assertEqual(
+            record["inject_destinations"],
+            ["tools/testing/selftests/net/override.sh", "tools/testing/selftests/net/override.sh"],
+        )
 
     def test_enqueue_job_freezes_service_skip_tests(self):
         config = dataclasses.replace(self.config, skip_tests="net:skip-one.sh skip-two.sh")
@@ -192,6 +300,48 @@ class VmksftServiceTest(unittest.TestCase):
 
         self.assertFalse(patch_has_diff(cover))
 
+    def test_enqueue_job_rejects_missing_injected_source(self):
+        with self.assertRaisesRegex(FileNotFoundError, "inject source not found"):
+            enqueue_job(
+                self.config,
+                JobOptions(
+                    inject_files=(
+                        InjectFile(
+                            source=str(self.root / "missing.txt"),
+                            destination=str(self.kernel_tree / "tools/testing/selftests/net/sample.sh"),
+                        ),
+                    ),
+                ),
+            )
+
+    def test_enqueue_job_rejects_directory_injected_source(self):
+        with self.assertRaisesRegex(ValueError, "inject source must be a file or symlink"):
+            enqueue_job(
+                self.config,
+                JobOptions(
+                    inject_files=(
+                        InjectFile(
+                            source=str(self.patch_dir),
+                            destination=str(self.kernel_tree / "tools/testing/selftests/net/sample.sh"),
+                        ),
+                    ),
+                ),
+            )
+
+    def test_enqueue_job_rejects_injected_destination_outside_kernel_tree(self):
+        inject_source = self.root / "outside.sh"
+        inject_source.write_text("#!/bin/sh\necho outside\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "inject destination must be under kernel tree"):
+            enqueue_job(
+                self.config,
+                JobOptions(
+                    inject_files=(
+                        InjectFile(source=str(inject_source), destination=str(self.root / "outside-target.sh")),
+                    ),
+                ),
+            )
+
     def test_cancel_queued_job_marks_job_cancelled(self):
         record = enqueue_job(self.config, JobOptions())
         self.assertTrue(cancel_queued_job(self.config, record["job_id"]))
@@ -228,6 +378,32 @@ class VmksftServiceTest(unittest.TestCase):
 
         self.assertEqual(options.mode, "dirty")
         self.assertEqual(options.tests, "net:sample.sh")
+
+    def test_queue_submit_parser_accepts_repeated_injected_files(self):
+        args = parse_args([
+            "submit",
+            "--mode",
+            "dirty",
+            "--inject-file",
+            "first",
+            "/tmp/one",
+            "--tests",
+            "net:sample.sh",
+            "--inject-file",
+            "second",
+            "/tmp/two/",
+        ])
+        options = build_options(args)
+
+        self.assertEqual(options.mode, "dirty")
+        self.assertEqual(options.tests, "net:sample.sh")
+        self.assertEqual(
+            options.inject_files,
+            (
+                InjectFile(source="first", destination="/tmp/one"),
+                InjectFile(source="second", destination="/tmp/two/"),
+            ),
+        )
 
     def test_create_relative_symlink_replaces_stale_directory(self):
         target = self.root / "target"

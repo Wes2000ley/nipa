@@ -19,6 +19,7 @@ from vmksft_service_lib import (
     DEFAULT_MEMORY,
     DEFAULT_MODE,
     DEFAULT_THREADS,
+    InjectFile,
     JobOptions,
     cancel_queued_job,
     enqueue_job,
@@ -46,6 +47,9 @@ def parse_args(argv=None):
     submit.add_argument("--fresh-cache", action="store_true")
     submit.add_argument("--patch-dir",
                         help="Directory of .patch/.mbox files to freeze for --mode patches")
+    submit.add_argument("--inject-file", action="append", nargs=2, metavar=("SRC", "DEST"),
+                        default=[],
+                        help="Overlay SRC onto absolute DEST within the frozen kernel snapshot; repeat per file")
     submit.add_argument("--tests", default="",
                         help="Whitespace/comma-separated test selectors to run exclusively")
 
@@ -71,6 +75,10 @@ def build_options(args):
         fresh_cache=bool(args.fresh_cache),
         patch_dir=args.patch_dir or "",
         tests=args.tests or "",
+        inject_files=tuple(
+            InjectFile(source=source, destination=destination)
+            for source, destination in (args.inject_file or [])
+        ),
     )
 
 

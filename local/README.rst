@@ -46,8 +46,11 @@ Submit jobs through the wrapper:
   ./vmksft committed
   ./vmksft dirty
   ./vmksft committed --tests 'net:tcp_fastopen_backup_key.sh'
+  ./vmksft committed --inject-file /tmp/helper.sh /abs/kernel/tree/tools/testing/selftests/net/
+  ./vmksft dirty --inject-file /tmp/a.c /abs/kernel/tree/net/core/a.c --inject-file /tmp/b.h /abs/kernel/tree/include/linux/b.h
   ./vmksft patches --patch-dir /path/to/series
   ./vmksft patches --patch-dir /path/to/series --tests 'net/packetdrill:tcp_rcv_toobig.pkt'
+  ./vmksft patches --patch-dir /path/to/series --inject-file ./fix.c /abs/kernel/tree/net/core/fix.c
   ./vmksft list
 
 The wrapper requires the Compose service to already be running. It executes all
@@ -65,11 +68,14 @@ long-lived ``vmksft-service`` container.
 - ``committed`` freezes the current committed ``HEAD`` of the configured kernel tree
 - ``dirty`` freezes tracked and untracked working-tree content into a synthetic snapshot
 - ``patches`` freezes the supplied ``.patch`` / ``.mbox`` directory at queue time
+- ``--inject-file SRC DEST`` overlays a source file onto an absolute destination path under the configured kernel tree
+- repeat ``--inject-file`` once per file you want to overlay
+- if ``DEST`` ends with ``/``, vmksft appends the source basename after normalizing the path
 - ``--tests`` restricts a job to explicit selectors such as ``prog.sh`` or ``target:prog.sh``
 
 Queued jobs do not drift after submission. A later edit to the kernel tree,
-patch folder, configured target suite, skip list, or ``--tests`` selector does
-not change the queued payload.
+patch folder, injected source file, configured target suite, skip list, or
+``--tests`` selector does not change the queued payload.
 
 The service publishes a stable browse root at ``http://localhost:8888/`` by
 default. The key paths are:

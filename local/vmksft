@@ -27,13 +27,17 @@ Usage:
 Examples:
   ./vmksft committed
   ./vmksft dirty --threads 4
+  ./vmksft committed --tests 'net:tcp_fastopen_backup_key.sh'
+  ./vmksft dirty --tests 'net/packetdrill:tcp_rcv_toobig.pkt'
   ./vmksft patches --patch-dir ~/series --fresh-cache
+  ./vmksft patches --patch-dir ~/series --tests 'net:mptcp_connect.sh'
   ./vmksft list
 
 Behavior:
   - The only supported runtime is the long-lived Docker Compose service.
   - Start it with `docker compose up -d vmksft-service` or the Compose systemd unit.
   - `patches` mode freezes the supplied patch directory at queue time.
+  - `--tests` accepts whitespace/comma-separated selectors like `prog.sh` or `target:prog.sh`.
 EOF
 }
 

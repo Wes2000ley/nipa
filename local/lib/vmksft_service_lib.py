@@ -22,6 +22,7 @@ DEFAULT_CPUS = "auto"
 DEFAULT_MEMORY = "auto"
 DEFAULT_INIT_PROMPT = "#"
 DEFAULT_WEB_PORT = 8888
+DEFAULT_TARGETS = "net net/packetdrill drivers/net/netdevsim"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,6 +32,7 @@ class RuntimeConfig:
     harness_state_dir: Path
     public_host: str
     web_port: int
+    targets: str
     skip_tests: str
 
     @property
@@ -84,6 +86,7 @@ class JobOptions:
     init_prompt: str = DEFAULT_INIT_PROMPT
     fresh_cache: bool = False
     patch_dir: str = ""
+    tests: str = ""
 
 
 def utc_now():
@@ -139,6 +142,7 @@ def load_runtime_config(script_path):
     state_root = resolve_path(os.environ.get("NIPA_STATE_DIR", "./state"), script_dir)
     public_host = os.environ.get("NIPA_PUBLIC_HOST", "localhost")
     web_port = int(os.environ.get("NIPA_WEB_PORT", DEFAULT_WEB_PORT))
+    targets = os.environ.get("NIPA_VMKSFT_TARGETS", DEFAULT_TARGETS).strip() or DEFAULT_TARGETS
     skip_tests = os.environ.get("NIPA_VMKSFT_SKIP_TESTS", "").strip()
 
     return RuntimeConfig(
@@ -147,6 +151,7 @@ def load_runtime_config(script_path):
         harness_state_dir=state_root / "vmksft-net",
         public_host=public_host,
         web_port=web_port,
+        targets=targets,
         skip_tests=skip_tests,
     )
 
@@ -540,8 +545,10 @@ def enqueue_job(config, options):
         "source_base": source_base,
         "snapshot_tree": str(snapshot_tree),
         "snapshot_head": snapshot_head,
+        "targets": config.targets,
         "patch_dir": str(patch_dir) if patch_dir is not None else "",
         "patch_count": patch_count,
+        "selected_tests": options.tests.strip(),
         "skip_tests": config.skip_tests,
         "options": dataclasses.asdict(options),
     }
@@ -690,6 +697,8 @@ def _job_public_record(record):
     result = {
         "job_id": record.get("job_id", ""),
         "requested_mode": record.get("requested_mode", ""),
+        "targets": record.get("targets", ""),
+        "selected_tests": record.get("selected_tests", ""),
         "source_branch": record.get("source_branch", ""),
         "source_head": record.get("source_head", ""),
         "snapshot_head": record.get("snapshot_head", ""),

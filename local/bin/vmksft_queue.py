@@ -29,7 +29,7 @@ from vmksft_service_lib import (
 )
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Submit and inspect local vmksft service jobs.",
     )
@@ -46,6 +46,8 @@ def parse_args():
     submit.add_argument("--fresh-cache", action="store_true")
     submit.add_argument("--patch-dir",
                         help="Directory of .patch/.mbox files to freeze for --mode patches")
+    submit.add_argument("--tests", default="",
+                        help="Whitespace/comma-separated test selectors to run exclusively")
 
     subparsers.add_parser("list", help="List known jobs")
 
@@ -55,7 +57,7 @@ def parse_args():
     cancel = subparsers.add_parser("cancel", help="Cancel a queued job")
     cancel.add_argument("job_id")
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def build_options(args):
@@ -68,6 +70,7 @@ def build_options(args):
         init_prompt=args.init_prompt,
         fresh_cache=bool(args.fresh_cache),
         patch_dir=args.patch_dir or "",
+        tests=args.tests or "",
     )
 
 

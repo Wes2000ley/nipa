@@ -13,6 +13,7 @@ services:
       NIPA_STATE_DIR: /workspace/local/state
       NIPA_WEB_PORT: ${NIPA_WEB_PORT:-8888}
       NIPA_PUBLIC_HOST: ${NIPA_PUBLIC_HOST:-localhost}
+      NIPA_VMKSFT_TARGETS: ${NIPA_VMKSFT_TARGETS:-}
       NIPA_VMKSFT_SKIP_TESTS: ${NIPA_VMKSFT_SKIP_TESTS:-}
     ports:
       - "${NIPA_WEB_PORT:-8888}:${NIPA_WEB_PORT:-8888}"

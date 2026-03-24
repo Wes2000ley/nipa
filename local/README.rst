@@ -45,7 +45,9 @@ Submit jobs through the wrapper:
 
   ./vmksft committed
   ./vmksft dirty
+  ./vmksft committed --tests 'net:tcp_fastopen_backup_key.sh'
   ./vmksft patches --patch-dir /path/to/series
+  ./vmksft patches --patch-dir /path/to/series --tests 'net/packetdrill:tcp_rcv_toobig.pkt'
   ./vmksft list
 
 The wrapper requires the Compose service to already be running. It executes all
@@ -63,9 +65,11 @@ long-lived ``vmksft-service`` container.
 - ``committed`` freezes the current committed ``HEAD`` of the configured kernel tree
 - ``dirty`` freezes tracked and untracked working-tree content into a synthetic snapshot
 - ``patches`` freezes the supplied ``.patch`` / ``.mbox`` directory at queue time
+- ``--tests`` restricts a job to explicit selectors such as ``prog.sh`` or ``target:prog.sh``
 
 Queued jobs do not drift after submission. A later edit to the kernel tree,
-patch folder, or configured skip list does not change the queued payload.
+patch folder, configured target suite, skip list, or ``--tests`` selector does
+not change the queued payload.
 
 The service publishes a stable browse root at ``http://localhost:8888/`` by
 default. The key paths are:
@@ -136,6 +140,8 @@ Notes
   a different host path.
 - The public HTTP port and published host come from ``NIPA_WEB_PORT`` and
   ``NIPA_PUBLIC_HOST``.
+- ``NIPA_VMKSFT_TARGETS`` configures the default whitespace-separated kselftest
+  ``TARGETS`` suite for new jobs. The value is frozen into each queued job.
 - ``NIPA_VMKSFT_SKIP_TESTS`` may contain a whitespace/comma-separated list of
   test names to suppress from every queued job. The value is frozen into each
   job at submission time.

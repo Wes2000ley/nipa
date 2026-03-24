@@ -16,6 +16,7 @@ from vmksft_service_lib import (
     DEFAULT_CPUS,
     DEFAULT_INIT_PROMPT,
     DEFAULT_MEMORY,
+    DEFAULT_TARGETS,
     DEFAULT_THREADS,
     _maybe_clone_local,
     load_job_record,
@@ -24,7 +25,6 @@ from vmksft_service_lib import (
 
 
 EXECUTOR_NAME = "vmksft-net-local"
-EXECUTOR_TARGET = "net net/packetdrill drivers/net/netdevsim net/mptcp"
 DEFAULT_BRANCH_NAME = "local-vmksft-net"
 DEFAULT_RESERVED_MEM_GB = 8
 DEFAULT_VM_MEM_GB = 2
@@ -147,6 +147,10 @@ def ensure_public_site(config):
 
 def generate_run_id():
     return f"{utc_now().strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+
+
+def job_targets(job_record):
+    return (job_record.get("targets") or DEFAULT_TARGETS).strip() or DEFAULT_TARGETS
 
 
 def published_branch_name(mode, run_id):
@@ -286,10 +290,12 @@ def sync_worker_tree(config, snapshot_tree, fresh_cache):
 
 
 def write_run_metadata(config, layout, job_record, branch_name, branch_date):
+    targets = job_targets(job_record)
     data = {
         "run_id": layout.run_id,
         "executor_name": EXECUTOR_NAME,
-        "targets": EXECUTOR_TARGET,
+        "targets": targets,
+        "selected_tests": job_record.get("selected_tests", ""),
         "mode": job_record.get("requested_mode", ""),
         "source_tree": job_record.get("source_tree", ""),
         "source_branch": job_record.get("source_branch", ""),
@@ -332,6 +338,8 @@ def write_run_pages(layout, branch_name):
 def build_executor_config(config, layout, job_record, worker_tree, branch_name, branch_date):
     host_mem_mib = host_mem_kb() // 1024
     options = job_record.get("options", {})
+    targets = job_targets(job_record)
+    selected_tests = job_record.get("selected_tests", "")
     skip_tests = job_record.get("skip_tests", "")
     guest_memory = resolve_guest_memory(options.get("memory", DEFAULT_MEMORY))
     guest_mem_mib = memory_to_mib(guest_memory)
@@ -342,7 +350,7 @@ def build_executor_config(config, layout, job_record, worker_tree, branch_name, 
     config_text = f"""[executor]
 name = {EXECUTOR_NAME}
 group = selftests-net
-test = {EXECUTOR_TARGET}
+test = {targets}
 deadline_minutes = 480
 
 [run]
@@ -371,7 +379,8 @@ build_reuse = true
 build_clean = {options.get("build_clean", DEFAULT_BUILD_CLEAN)}
 
 [ksft]
-target = {EXECUTOR_TARGET}
+target = {targets}
+only_tests = {selected_tests}
 skip_tests = {skip_tests}
 nested_tests = on
 
@@ -392,6 +401,7 @@ runtime_history_cutoff_sec = {DEFAULT_RUNTIME_HISTORY_CUTOFF_SEC}
 
 
 def render_results_page(config, layout, job_record):
+    targets = job_targets(job_record)
     cmd = [
         "python3", str(config.script_dir / "bin" / "render-vmksft-results.py"),
         "--manifest", str(layout.manifest_path),
@@ -399,7 +409,7 @@ def render_results_page(config, layout, job_record):
         "--html", str(layout.summary_html),
         "--executor-name", EXECUTOR_NAME,
         "--mode", job_record.get("requested_mode", ""),
-        "--targets", EXECUTOR_TARGET,
+        "--targets", targets,
         "--source-tree", job_record.get("source_tree", ""),
         "--source-branch", job_record.get("source_branch", ""),
         "--source-head", job_record.get("source_head", ""),

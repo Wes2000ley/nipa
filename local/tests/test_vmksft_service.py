@@ -17,8 +17,9 @@ if str(BIN_DIR) not in sys.path:
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 
+from vmksft_queue import build_options, parse_args  # noqa: E402
 from vmksft_service import VmksftService  # noqa: E402
-from vmksft_job_lib import create_relative_symlink  # noqa: E402
+from vmksft_job_lib import build_executor_config, create_relative_symlink, create_run_layout  # noqa: E402
 from vmksft_service_lib import (  # noqa: E402
     JobOptions,
     RuntimeConfig,
@@ -51,6 +52,7 @@ class VmksftServiceTest(unittest.TestCase):
             harness_state_dir=self.root / "state" / "vmksft-net",
             public_host="localhost",
             web_port=8888,
+            targets="net net/packetdrill drivers/net/netdevsim",
             skip_tests="",
         )
         ensure_layout(self.config)
@@ -139,6 +141,43 @@ class VmksftServiceTest(unittest.TestCase):
         unchanged = load_job_record(config, first["job_id"])
         self.assertEqual(unchanged["skip_tests"], "net:skip-one.sh skip-two.sh")
 
+    def test_enqueue_job_freezes_service_targets_and_selected_tests(self):
+        config = dataclasses.replace(self.config, targets="net net/mptcp")
+        first = enqueue_job(config, JobOptions(tests="net:sample.sh"))
+        self.assertEqual(first["targets"], "net net/mptcp")
+        self.assertEqual(first["selected_tests"], "net:sample.sh")
+
+        changed = dataclasses.replace(config, targets="net/packetdrill")
+        second = enqueue_job(changed, JobOptions(tests="net/packetdrill:bar_case.pkt"))
+        self.assertEqual(second["targets"], "net/packetdrill")
+        self.assertEqual(second["selected_tests"], "net/packetdrill:bar_case.pkt")
+
+        unchanged = load_job_record(config, first["job_id"])
+        self.assertEqual(unchanged["targets"], "net net/mptcp")
+        self.assertEqual(unchanged["selected_tests"], "net:sample.sh")
+
+    def test_build_executor_config_uses_frozen_targets_and_selected_tests(self):
+        record = enqueue_job(
+            dataclasses.replace(self.config, targets="net net/mptcp"),
+            JobOptions(tests="net:sample.sh"),
+        )
+        layout = create_run_layout(self.config, "run-config-test")
+        layout.run_dir.mkdir(parents=True)
+
+        build_executor_config(
+            self.config,
+            layout,
+            record,
+            self.kernel_tree,
+            "local-vmksft-net-committed-run-config-test",
+            "2026-03-23T00:00:00+00:00",
+        )
+
+        config_text = layout.config_path.read_text(encoding="utf-8")
+        self.assertIn("test = net net/mptcp", config_text)
+        self.assertIn("target = net net/mptcp", config_text)
+        self.assertIn("only_tests = net:sample.sh", config_text)
+
     def test_patch_has_diff_ignores_cover_letter_separator(self):
         cover = self.patch_dir / "0000-cover-letter.patch"
         cover.write_text(
@@ -182,6 +221,13 @@ class VmksftServiceTest(unittest.TestCase):
         self.assertEqual(command[0], sys.executable)
         self.assertTrue(command[1].endswith("/local/bin/vmksft_service.py"))
         self.assertEqual(command[2:], ["run-job", "--job-id", record["job_id"]])
+
+    def test_queue_submit_parser_accepts_tests_option(self):
+        args = parse_args(["submit", "--mode", "dirty", "--tests", "net:sample.sh"])
+        options = build_options(args)
+
+        self.assertEqual(options.mode, "dirty")
+        self.assertEqual(options.tests, "net:sample.sh")
 
     def test_create_relative_symlink_replaces_stale_directory(self):
         target = self.root / "target"

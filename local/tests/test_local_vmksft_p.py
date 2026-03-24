@@ -19,10 +19,12 @@ from local_vmksft_p import (  # noqa: E402
     filter_prog_list,
     load_runtime_history,
     main,
+    parse_test_selectors,
     parse_skip_tests,
     run_executor,
     runtime_history_key,
     save_runtime_history,
+    select_prog_list,
     sort_progs_by_runtime_history,
     update_runtime_history,
 )
@@ -77,6 +79,46 @@ class LocalVmksftPTests(unittest.TestCase):
                 ("net/packetdrill", "bar_case.pkt"),
             ],
         )
+
+    def test_parse_test_selectors_supports_whitespace_and_commas(self):
+        selectors = parse_test_selectors(" net:foo.sh,bar_case.pkt   baz ")
+
+        self.assertEqual(selectors, {"net:foo.sh", "bar_case.pkt", "baz"})
+
+    def test_select_prog_list_keeps_only_matching_programs(self):
+        progs = [
+            ("net", "tcp_fastopen_backup_key.sh"),
+            ("net", "other_test.sh"),
+            ("net/packetdrill", "bar_case.pkt"),
+        ]
+
+        kept, excluded = select_prog_list(
+            progs,
+            parse_test_selectors("net:tcp_fastopen_backup_key.sh bar_case.pkt"),
+        )
+
+        self.assertEqual(
+            kept,
+            [
+                ("net", "tcp_fastopen_backup_key.sh"),
+                ("net/packetdrill", "bar_case.pkt"),
+            ],
+        )
+        self.assertEqual(excluded, [("net", "other_test.sh")])
+
+    def test_select_prog_list_matches_namified_target_selector(self):
+        progs = [
+            ("net/packetdrill", "bar_case.pkt"),
+            ("net/packetdrill", "other_case.pkt"),
+        ]
+
+        kept, excluded = select_prog_list(
+            progs,
+            parse_test_selectors("net/packetdrill:bar-case-pkt"),
+        )
+
+        self.assertEqual(kept, [("net/packetdrill", "bar_case.pkt")])
+        self.assertEqual(excluded, [("net/packetdrill", "other_case.pkt")])
 
     def test_run_executor_requires_explicit_generated_config(self):
         with self.assertRaisesRegex(ValueError, "explicit config path"):

@@ -43,10 +43,26 @@ def get_prog_list(vm, targets, test_path):
     return [(e.split(":")[0].strip(), e.split(":")[1].strip()) for e in targets]
 
 
-def parse_skip_tests(value):
+def parse_test_selectors(value):
     if not value:
         return set()
     return {item for item in re.split(r'[\s,]+', value.strip()) if item}
+
+
+def parse_skip_tests(value):
+    return parse_test_selectors(value)
+
+
+def test_selector_matches(target, prog, selectors):
+    if not selectors:
+        return False
+
+    prog_name = prog.strip()
+    prog_namified = namify(prog_name)
+    target_prog = f"{target}:{prog_name}"
+    target_namified = f"{target}:{prog_namified}"
+    return (prog_name in selectors or prog_namified in selectors or
+            target_prog in selectors or target_namified in selectors)
 
 
 def filter_prog_list(progs, skip_tests):
@@ -57,15 +73,26 @@ def filter_prog_list(progs, skip_tests):
     skipped = []
     for target, prog in progs:
         prog_name = prog.strip()
-        prog_namified = namify(prog_name)
-        target_prog = f"{target}:{prog_name}"
-        target_namified = f"{target}:{prog_namified}"
-        if (prog_name in skip_tests or prog_namified in skip_tests or
-                target_prog in skip_tests or target_namified in skip_tests):
+        if test_selector_matches(target, prog_name, skip_tests):
             skipped.append((target, prog_name))
             continue
         kept.append((target, prog_name))
     return kept, skipped
+
+
+def select_prog_list(progs, only_tests):
+    if not only_tests:
+        return progs, []
+
+    selected = []
+    excluded = []
+    for target, prog in progs:
+        prog_name = prog.strip()
+        if test_selector_matches(target, prog_name, only_tests):
+            selected.append((target, prog_name))
+        else:
+            excluded.append((target, prog_name))
+    return selected, excluded
 
 
 def runtime_history_key(target, prog):
@@ -572,6 +599,29 @@ def run_suite(binfo, rinfo, config):
     if skipped_progs:
         skipped_names = ", ".join(f"{target}:{prog}" for target, prog in skipped_progs)
         print(f"INFO: skipping {len(skipped_progs)} configured test(s): {skipped_names}")
+    only_tests = parse_test_selectors(config.get('ksft', 'only_tests', fallback=''))
+    progs, excluded_progs = select_prog_list(progs, only_tests)
+    if only_tests:
+        selected_names = ", ".join(sorted(only_tests))
+        print(f"INFO: selecting only configured test(s): {selected_names}")
+        if excluded_progs:
+            print(f"INFO: filtered out {len(excluded_progs)} unselected test(s)")
+        if not progs:
+            message = f"no tests matched configured selector(s): {selected_names}"
+            print(f"ERROR: {message}")
+            if live_status_path and live_status:
+                with live_lock:
+                    live_status['build']['status'] = 'pass'
+                    live_status['status'] = 'failed'
+                    live_status['finished'] = True
+                    live_status['failure'] = {'message': message}
+                    _live_status_touch(live_status_path, live_status)
+            return [{
+                'test': 'selection',
+                'group': grp_name,
+                'result': 'fail',
+                'link': link + '/build',
+            }]
     runtime_history_path = config.get('local', 'runtime_history_path', fallback='')
     runtime_history_cutoff_sec = config.getfloat('cfg', 'runtime_history_cutoff_sec', fallback=10)
     runtime_history = load_runtime_history(runtime_history_path)

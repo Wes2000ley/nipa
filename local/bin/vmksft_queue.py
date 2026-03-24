@@ -4,6 +4,7 @@
 import argparse
 import json
 import sys
+import time
 
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from vmksft_service_lib import (
     load_runtime_config,
     write_public_status,
 )
+
+TERMINAL_JOB_STATUSES = {"complete", "failed", "cancelled"}
 
 
 def parse_args(argv=None):
@@ -56,6 +59,8 @@ def parse_args(argv=None):
     subparsers.add_parser("list", help="List known jobs")
 
     show = subparsers.add_parser("show", help="Show one job as JSON")
+    show.add_argument("-f", "--follow", action="store_true",
+                      help="follow job updates until it reaches a terminal state")
     show.add_argument("job_id")
 
     cancel = subparsers.add_parser("cancel", help="Cancel a queued job")
@@ -83,7 +88,12 @@ def build_options(args):
 
 
 def print_job_json(record):
-    print(json.dumps(record, indent=2, sort_keys=True))
+    print(json.dumps(record, indent=2, sort_keys=True), flush=True)
+
+
+def job_is_terminal(record):
+    state = record.get("state", {})
+    return state.get("status") in TERMINAL_JOB_STATUSES
 
 
 def handle_submit(config, args):
@@ -112,8 +122,18 @@ def handle_list(config):
     return 0
 
 
-def handle_show(config, job_id):
-    print_job_json(load_job_record(config, job_id))
+def handle_show(config, job_id, follow=False, poll_interval=1.0):
+    record = load_job_record(config, job_id)
+    print_job_json(record)
+
+    while follow and not job_is_terminal(record):
+        time.sleep(poll_interval)
+        updated = load_job_record(config, job_id)
+        if updated == record:
+            continue
+        record = updated
+        print()
+        print_job_json(record)
     return 0
 
 
@@ -136,7 +156,7 @@ def main():
         if args.command == "list":
             return handle_list(config)
         if args.command == "show":
-            return handle_show(config, args.job_id)
+            return handle_show(config, args.job_id, follow=args.follow)
         if args.command == "cancel":
             return handle_cancel(config, args.job_id)
     except Exception as exc:

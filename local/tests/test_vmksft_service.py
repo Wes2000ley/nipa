@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 
+import contextlib
 import dataclasses
+import io
+import json
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 from pathlib import Path
@@ -17,7 +22,7 @@ if str(BIN_DIR) not in sys.path:
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 
-from vmksft_queue import build_options, parse_args  # noqa: E402
+from vmksft_queue import build_options, handle_show, parse_args  # noqa: E402
 from vmksft_service import VmksftService  # noqa: E402
 from vmksft_job_lib import build_executor_config, create_relative_symlink, create_run_layout  # noqa: E402
 from vmksft_service_lib import (  # noqa: E402
@@ -32,6 +37,7 @@ from vmksft_service_lib import (  # noqa: E402
     next_queued_job,
     patch_has_diff,
     recover_stale_running_jobs,
+    update_job_state,
     write_public_status,
 )
 
@@ -403,6 +409,54 @@ class VmksftServiceTest(unittest.TestCase):
                 InjectFile(source="first", destination="/tmp/one"),
                 InjectFile(source="second", destination="/tmp/two/"),
             ),
+        )
+
+    def test_queue_show_parser_accepts_follow(self):
+        args = parse_args(["show", "--follow", "job-123"])
+
+        self.assertEqual(args.command, "show")
+        self.assertEqual(args.job_id, "job-123")
+        self.assertTrue(args.follow)
+
+    def test_queue_show_follow_prints_updates_until_terminal_state(self):
+        record = enqueue_job(self.config, JobOptions())
+        output = io.StringIO()
+
+        def advance_job():
+            time.sleep(0.02)
+            update_job_state(
+                self.config,
+                record["job_id"],
+                "running",
+                started_at="2026-03-23T00:00:01+00:00",
+                detail="job process active",
+            )
+            time.sleep(0.02)
+            update_job_state(
+                self.config,
+                record["job_id"],
+                "complete",
+                finished_at="2026-03-23T00:00:02+00:00",
+                detail="job process exited successfully",
+                run_exit_code=0,
+            )
+
+        updater = threading.Thread(target=advance_job)
+        updater.start()
+        with contextlib.redirect_stdout(output):
+            rc = handle_show(self.config, record["job_id"], follow=True, poll_interval=0.01)
+        updater.join()
+
+        snapshots = [
+            json.loads(chunk)
+            for chunk in output.getvalue().split("\n\n")
+            if chunk.strip()
+        ]
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            [snapshot["state"]["status"] for snapshot in snapshots],
+            ["queued", "running", "complete"],
         )
 
     def test_create_relative_symlink_replaces_stale_directory(self):

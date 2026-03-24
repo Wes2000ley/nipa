@@ -52,6 +52,7 @@ Submit jobs through the wrapper:
   ./vmksft patches --patch-dir /path/to/series --tests 'net/packetdrill:tcp_rcv_toobig.pkt'
   ./vmksft patches --patch-dir /path/to/series --inject-file ./fix.c /abs/kernel/tree/net/core/fix.c
   ./vmksft list
+  ./vmksft show --follow JOB_ID
 
 The wrapper requires the Compose service to already be running. It executes all
 queue operations inside the container and stages patch directories into the
@@ -72,6 +73,7 @@ long-lived ``vmksft-service`` container.
 - repeat ``--inject-file`` once per file you want to overlay
 - if ``DEST`` ends with ``/``, vmksft appends the source basename after normalizing the path
 - ``--tests`` restricts a job to explicit selectors such as ``prog.sh`` or ``target:prog.sh``
+- ``show --follow`` prints job JSON updates until the job becomes ``complete``, ``failed``, or ``cancelled``
 
 Queued jobs do not drift after submission. A later edit to the kernel tree,
 patch folder, injected source file, configured target suite, skip list, or

@@ -23,7 +23,7 @@ Usage:
   vmksft patches --patch-dir PATH [queue-options...]
   vmksft submit [queue-options...]
   vmksft list
-  vmksft show JOB_ID
+  vmksft show [--follow] JOB_ID
   vmksft cancel JOB_ID
 
 Examples:
@@ -37,6 +37,7 @@ Examples:
   ./vmksft patches --patch-dir ~/series --tests 'net:mptcp_connect.sh'
   ./vmksft patches --patch-dir ~/series --inject-file ./fix.c /abs/kernel/tree/net/core/fix.c
   ./vmksft list
+  ./vmksft show --follow JOB_ID
 
 Behavior:
   - The only supported runtime is the long-lived Docker Compose service.
@@ -46,6 +47,7 @@ Behavior:
   - Repeat `--inject-file` once per file you want to overlay.
   - If DEST ends with `/`, vmksft appends the source basename after normalizing the path.
   - `--tests` accepts whitespace/comma-separated selectors like `prog.sh` or `target:prog.sh`.
+  - `show --follow` stays attached and exits when the job becomes complete, failed, or cancelled.
 EOF
 }
 
